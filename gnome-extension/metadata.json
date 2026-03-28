@@ -1,0 +1,9 @@
+{
+  "name": "Dictation Integration",
+  "description": "Integration with the Dictation application, providing a custom tray icon, shortcut keys, and focus management.",
+  "uuid": "dictation@timharper",
+  "shell-version": [
+    "49"
+  ],
+  "url": ""
+}
