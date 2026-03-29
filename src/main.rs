@@ -9,6 +9,7 @@ use std::env;
 
 mod recorder;
 mod transcriber;
+mod accessibility;
 
 const APP_ID: &str = "org.gnome.dictation";
 
@@ -28,6 +29,8 @@ enum Commands {
         #[arg(short, long, default_value_t = 5)]
         duration: u64,
     },
+    /// Test accessibility (AT-SPI) by printing visible text of the active window
+    Accessibility,
 }
 
 fn main() -> glib::ExitCode {
@@ -38,6 +41,13 @@ fn main() -> glib::ExitCode {
             let rt = Runtime::new().expect("Failed to create Tokio runtime");
             rt.block_on(async move {
                 test_microphone(duration).await;
+            });
+            glib::ExitCode::SUCCESS
+        }
+        Some(Commands::Accessibility) => {
+            let rt = Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(async move {
+                test_accessibility().await;
             });
             glib::ExitCode::SUCCESS
         }
@@ -94,6 +104,41 @@ async fn test_microphone(duration_secs: u64) {
     writer.finalize().expect("Failed to finalize WAV file");
 
     println!("Success! Recorded to: {:?}", file_path);
+}
+
+async fn test_accessibility() {
+    println!("Initializing AT-SPI...");
+    let manager = match accessibility::AccessibilityManager::new().await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Failed to initialize AT-SPI: {:?}", e);
+            return;
+        }
+    };
+
+    println!("\nGrabbing visible text of active window...");
+    match manager.get_visible_text().await {
+        Ok(texts) => {
+            for (i, text) in texts.iter().enumerate() {
+                println!("VISIBLE {}: \"{}\"", i + 1, text);
+            }
+        }
+        Err(e) => eprintln!("Error getting visible text: {:?}", e),
+    }
+
+    println!("\nGrabbing focused context (ancestors included)...");
+    match manager.get_focused_context().await {
+        Ok(texts) => {
+            if texts.is_empty() {
+                println!("No focused context found.");
+            } else {
+                for (i, text) in texts.iter().enumerate() {
+                    println!("CONTEXT {}: \"{}\"", i + 1, text);
+                }
+            }
+        }
+        Err(e) => eprintln!("Error getting focused context: {:?}", e),
+    }
 }
 
 fn build_ui(app: &Application, runtime: Arc<Runtime>) {
