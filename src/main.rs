@@ -4,8 +4,10 @@ use libadwaita::{Application, ApplicationWindow, PreferencesGroup, ActionRow, Pr
 use gtk4::{glib, Box as GtkBox, Orientation, Button};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
-// use tokio_stream::StreamExt;
 use std::env;
+use std::path::PathBuf;
+use tokio::fs::File;
+use tokio_util::io::ReaderStream;
 
 mod recorder;
 mod transcriber;
@@ -34,6 +36,11 @@ enum Commands {
     },
     /// Test accessibility (AT-SPI) by printing visible text of the active window
     Accessibility,
+    /// Transcribe a WAV file using the configured backend
+    Transcribe {
+        /// Path to the WAV file
+        path: PathBuf,
+    },
 }
 
 fn main() -> glib::ExitCode {
@@ -51,6 +58,13 @@ fn main() -> glib::ExitCode {
             let rt = Runtime::new().expect("Failed to create Tokio runtime");
             rt.block_on(async move {
                 test_accessibility().await;
+            });
+            glib::ExitCode::SUCCESS
+        }
+        Some(Commands::Transcribe { path }) => {
+            let rt = Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(async move {
+                test_transcribe(path).await;
             });
             glib::ExitCode::SUCCESS
         }
@@ -105,6 +119,44 @@ async fn test_microphone(duration_secs: u64) {
     writer.finalize().expect("Failed to finalize WAV file");
 
     println!("Success! Recorded to: {:?}", file_path);
+}
+
+async fn test_transcribe(path: PathBuf) {
+    println!("Transcribing file: {:?}", path);
+    
+    let config = Config::load();
+    let url = match config.backend {
+        BackendConfig::WhisperCpp { url } => url,
+    };
+    
+    println!("Using backend: WhisperCpp at {}", url);
+    let client = transcriber::WhisperClient::new(url);
+    
+    let file = File::open(path).await.expect("Failed to open WAV file");
+    let stream = ReaderStream::new(file);
+    
+    // Map Result<Bytes, io::Error> to Bytes, ignoring errors for now
+    use futures_util::StreamExt;
+    let bytes_stream = stream.filter_map(|res| async { res.ok() });
+    
+    let mut transcription_stream = match client.stream_transcription(Box::pin(bytes_stream)).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to start transcription stream: {:?}", e);
+            return;
+        }
+    };
+
+    while let Some(res) = futures_util::StreamExt::next(&mut transcription_stream).await {
+        match res {
+            Ok(resp) => {
+                if !resp.text.is_empty() {
+                    println!("Transcription: {}", resp.text);
+                }
+            },
+            Err(e) => eprintln!("Transcription error: {:?}", e),
+        }
+    }
 }
 
 async fn test_accessibility() {
@@ -190,18 +242,6 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
         .text(&initial_whisper_url)
         .build();
     
-    let config_clone = config.clone();
-    whisper_url_row.connect_apply(move |row| {
-        let mut cfg = config_clone.lock().unwrap();
-        cfg.backend = BackendConfig::WhisperCpp {
-            url: row.text().to_string(),
-        };
-        cfg.save();
-        println!("Whisper URL saved: {}", row.text());
-    });
-    // Also save on focus out or text change? 
-    // connect_apply is usually enough if user presses Enter. 
-    // To be safer, let's use notify::text
     let config_clone = config.clone();
     whisper_url_row.connect_text_notify(move |row| {
         let mut cfg = config_clone.lock().unwrap();
@@ -290,10 +330,9 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
                     BackendConfig::WhisperCpp { url } => url.clone(),
                 }
             };
-            
+
             let client = transcriber::WhisperClient::new(url);
-            
-            // use futures_util::StreamExt;
+
             let mut transcription_stream = match client.stream_transcription(Box::pin(output.audio_stream)).await {
                 Ok(s) => s,
                 Err(e) => {
