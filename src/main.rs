@@ -1,20 +1,24 @@
 use clap::{Parser, Subcommand};
 use libadwaita::prelude::*;
-use libadwaita::{Application, ApplicationWindow, PreferencesGroup, ActionRow, PreferencesPage, EntryRow};
+use libadwaita::{Application, ApplicationWindow, PreferencesGroup, ActionRow, PreferencesPage, EntryRow, HeaderBar, ToolbarView};
 use gtk4::{glib, Box as GtkBox, Orientation, Button};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
+// use tokio_stream::StreamExt;
 use std::env;
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
+use zbus::Connection;
 
 mod recorder;
 mod transcriber;
 mod accessibility;
 mod config;
+mod extension_proxy;
 
 use config::{Config, BackendConfig, LlmConfig};
+use extension_proxy::ExtensionProxy;
 
 const APP_ID: &str = "org.gnome.dictation";
 
@@ -41,6 +45,27 @@ enum Commands {
         /// Path to the WAV file
         path: PathBuf,
     },
+    /// Test GNOME Extension integration
+    Extension {
+        #[command(subcommand)]
+        subcommand: ExtensionCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExtensionCommands {
+    /// Type a string into the focused window
+    Type { text: String },
+    /// Get clipboard content
+    GetClipboard,
+    /// Set clipboard content
+    SetClipboard { text: String },
+    /// Raise the application window
+    Raise,
+    /// Update tray icon and menu
+    UpdateMenu,
+    /// Listen for extension events (shortcut, menu selection)
+    Listen,
 }
 
 fn main() -> glib::ExitCode {
@@ -68,6 +93,13 @@ fn main() -> glib::ExitCode {
             });
             glib::ExitCode::SUCCESS
         }
+        Some(Commands::Extension { subcommand }) => {
+            let rt = Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(async move {
+                test_extension(subcommand).await;
+            });
+            glib::ExitCode::SUCCESS
+        }
         None => {
             let app = Application::builder()
                 .application_id(APP_ID)
@@ -80,6 +112,56 @@ fn main() -> glib::ExitCode {
             });
 
             app.run()
+        }
+    }
+}
+
+async fn test_extension(cmd: ExtensionCommands) {
+    let conn = Connection::session().await.expect("Failed to connect to session bus");
+    let proxy = ExtensionProxy::new(&conn).await.expect("Failed to create extension proxy");
+
+    match cmd {
+        ExtensionCommands::Type { text } => {
+            println!("Typing: '{}'", text);
+            proxy.type_string(&text).await.expect("Failed to type string");
+        }
+        ExtensionCommands::GetClipboard => {
+            let text = proxy.get_clipboard().await.expect("Failed to get clipboard");
+            println!("Clipboard: '{}'", text);
+        }
+        ExtensionCommands::SetClipboard { text } => {
+            println!("Setting clipboard to: '{}'", text);
+            proxy.set_clipboard(&text).await.expect("Failed to set clipboard");
+        }
+        ExtensionCommands::Raise => {
+            println!("Raising app...");
+            proxy.raise_app().await.expect("Failed to raise app");
+        }
+        ExtensionCommands::UpdateMenu => {
+            println!("Updating menu...");
+            proxy.update("audio-input-microphone-symbolic", vec![
+                ("test1", "Test Item 1"),
+                ("test2", "Test Item 2"),
+                ("quit", "Quit"),
+            ]).await.expect("Failed to update menu");
+        }
+        ExtensionCommands::Listen => {
+            println!("Listening for extension events. Press Ctrl+C to stop.");
+            
+            let mut menu_stream = proxy.receive_menu_item_selected().await.expect("Failed to receive menu signals");
+            let mut shortcut_stream = proxy.receive_shortcut_pressed().await.expect("Failed to receive shortcut signals");
+
+            loop {
+                tokio::select! {
+                    Some(signal) = tokio_stream::StreamExt::next(&mut menu_stream) => {
+                        let args = signal.args().expect("Failed to parse signal args");
+                        println!("Menu Item Selected: {}", args.id);
+                    }
+                    Some(_) = tokio_stream::StreamExt::next(&mut shortcut_stream) => {
+                        println!("Shortcut Pressed!");
+                    }
+                }
+            }
         }
     }
 }
@@ -136,8 +218,7 @@ async fn test_transcribe(path: PathBuf) {
     let stream = ReaderStream::new(file);
     
     // Map Result<Bytes, io::Error> to Bytes, ignoring errors for now
-    use futures_util::StreamExt;
-    let bytes_stream = stream.filter_map(|res| async { res.ok() });
+    let bytes_stream = tokio_stream::StreamExt::filter_map(stream, |res| res.ok());
     
     let mut transcription_stream = match client.stream_transcription(Box::pin(bytes_stream)).await {
         Ok(s) => s,
@@ -201,10 +282,14 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
         .application(app)
         .title("Dictation Settings")
         .default_width(600)
-        .default_height(400)
+        .default_height(450)
         .build();
 
-    let vbox = GtkBox::builder()
+    let toolbar_view = ToolbarView::new();
+    let header_bar = HeaderBar::new();
+    toolbar_view.add_top_bar(&header_bar);
+
+    let content_vbox = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(12)
         .margin_top(12)
@@ -308,7 +393,7 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
     page.add(&whisper_group);
     page.add(&llm_group);
 
-    vbox.append(&page);
+    content_vbox.append(&page);
 
     let start_button = Button::builder()
         .label("Start Recording (Test Stream)")
@@ -330,9 +415,9 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
                     BackendConfig::WhisperCpp { url } => url.clone(),
                 }
             };
-
+            
             let client = transcriber::WhisperClient::new(url);
-
+            
             let mut transcription_stream = match client.stream_transcription(Box::pin(output.audio_stream)).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -350,7 +435,9 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
         });
     });
 
-    vbox.append(&start_button);
-    window.set_content(Some(&vbox));
+    content_vbox.append(&start_button);
+    
+    toolbar_view.set_content(Some(&content_vbox));
+    window.set_content(Some(&toolbar_view));
     window.present();
 }

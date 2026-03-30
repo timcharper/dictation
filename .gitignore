@@ -1,1 +1,5 @@
 /target
+node_modules
+*.zip
+gnome-extension/extension.js
+gnome-extension/schemas/gschemas.compiled

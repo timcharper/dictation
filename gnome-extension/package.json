@@ -1,0 +1,20 @@
+{
+  "name": "dictation-extension",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild extension.ts --bundle --outfile=extension.js --format=esm --external:gi://* --external:resource://*",
+    "watch": "npm run build -- --watch"
+  },
+  "devDependencies": {
+    "@girs/gjs": "4.0.0-beta.43",
+    "@girs/gnome-shell": "49.1.0",
+    "@girs/gio-2.0": "2.88.0-4.0.0-beta.43",
+    "@girs/glib-2.0": "2.88.0-4.0.0-beta.43",
+    "@girs/st-1.0": "1.0.0-4.0.0-beta.43",
+    "@girs/clutter-13": "13.0.0-4.0.0-beta.43",
+    "@girs/meta-13": "13.0.0-4.0.0-beta.43",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.0.0"
+  }
+}

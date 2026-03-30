@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.dictation" path="/org/gnome/shell/extensions/dictation/">
+    <key name="dictation-shortcut" type="as">
+      <default>['&lt;Super&gt;d']</default>
+      <summary>Shortcut to trigger dictation</summary>
+    </key>
+  </schema>
+</schemalist>

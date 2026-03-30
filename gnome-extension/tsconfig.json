@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "gi://*": ["node_modules/@girs/*"],
+      "resource:///org/gnome/shell/*": ["node_modules/@girs/gnome-shell/dist/*"]
+    },
+    "outDir": ".",
+    "lib": ["ESNext", "DOM"],
+    "skipLibCheck": true
+  },
+  "include": ["extension.ts"]
+}
