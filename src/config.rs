@@ -11,6 +11,10 @@ pub struct Config {
     pub llm: LlmConfig,
     #[serde(default)]
     pub sound: SoundConfig,
+    #[serde(default = "default_shortcut")]
+    pub shortcut: String,
+    #[serde(default = "default_typing_delay")]
+    pub typing_delay_ms: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -31,6 +35,14 @@ pub struct SoundConfig {
     pub end_sound: Option<String>,
     #[serde(default = "default_ducking_volume")]
     pub ducking_volume: f32,
+}
+
+fn default_shortcut() -> String {
+    "<Super>d".to_string()
+}
+
+fn default_typing_delay() -> u64 {
+    500
 }
 
 fn default_ducking_volume() -> f32 {
@@ -70,6 +82,8 @@ impl Default for Config {
             backend: BackendConfig::default(),
             llm: LlmConfig::default(),
             sound: SoundConfig::default(),
+            shortcut: default_shortcut(),
+            typing_delay_ms: default_typing_delay(),
         }
     }
 }

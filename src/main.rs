@@ -67,6 +67,8 @@ enum Commands {
         #[command(subcommand)]
         subcommand: MprisCommands,
     },
+    /// Run as a daemon, listening for extension shortcuts
+    Daemon,
 }
 
 #[derive(Subcommand)]
@@ -95,6 +97,8 @@ enum ExtensionCommands {
     Listen,
     /// Register a global shortcut
     RegisterShortcut { shortcut: String },
+    /// Unregister the global shortcut
+    UnregisterShortcut,
     /// Get system volume
     GetVolume,
     /// Set system volume
@@ -162,6 +166,13 @@ fn main() -> glib::ExitCode {
             });
             glib::ExitCode::SUCCESS
         }
+        Some(Commands::Daemon) => {
+            let rt = Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(async move {
+                run_daemon().await;
+            });
+            glib::ExitCode::SUCCESS
+        }
         None => {
             let app = Application::builder()
                 .application_id(APP_ID)
@@ -225,6 +236,191 @@ async fn test_mpris(cmd: MprisCommands) {
     }
 }
 
+struct RecordingState {
+    samples: Vec<f32>,
+    recorder_output: recorder::RecorderOutput,
+    original_volume: Option<f64>,
+    paused_players: Vec<mpris::PlayerState>,
+    config: Config,
+}
+
+async fn run_daemon() {
+    let conn = Connection::session().await.expect("Failed to connect to session bus");
+    let proxy = ExtensionProxy::new(&conn).await.expect("Failed to create extension proxy");
+    let audio_mgr = audio::AudioManager::new();
+    let mpris_client = mpris::MprisClient::new(conn.clone());
+
+    let config = Config::load();
+    println!("Daemon started. Shortcut: {}. Listening for extension signals...", config.shortcut);
+
+    // Initial menu update
+    proxy.update("audio-input-microphone-symbolic", vec![
+        ("settings", "Settings"),
+    ]).await.expect("Failed to update extension menu");
+
+    // Register shortcut from config
+    proxy.register_shortcut(&config.shortcut).await.expect("Failed to register shortcut");
+
+    let mut menu_stream = proxy.receive_menu_item_selected().await.expect("Failed to receive menu signals");
+    let mut shortcut_stream = proxy.receive_shortcut_pressed().await.expect("Failed to receive shortcut signals");
+
+    let mut recording_state: Option<RecordingState> = None;
+
+    loop {
+        tokio::select! {
+            Some(signal) = tokio_stream::StreamExt::next(&mut menu_stream) => {
+                let args = signal.args().expect("Failed to parse signal args");
+                if args.id == "settings" {
+                    println!("Opening settings dialog...");
+                    let current_exe = std::env::current_exe().expect("Failed to get current exe");
+                    let _ = std::process::Command::new(current_exe).spawn();
+                }
+            }
+            Some(_) = tokio_stream::StreamExt::next(&mut shortcut_stream) => {
+                if let Some(state) = recording_state.take() {
+                    println!("Shortcut pressed! Stopping recording and transcribing...");
+                    let stop_time = std::time::Instant::now();
+                    
+                    // Create a WAV in memory to send to whisper
+                    let spec = hound::WavSpec {
+                        channels: state.recorder_output.config.channels as u16,
+                        sample_rate: state.recorder_output.config.sample_rate.0,
+                        bits_per_sample: 32,
+                        sample_format: hound::SampleFormat::Float,
+                    };
+                    
+                    let mut wav_data = std::io::Cursor::new(Vec::new());
+                    {
+                        let mut writer = hound::WavWriter::new(&mut wav_data, spec).expect("Failed to create WAV writer");
+                        for sample in state.samples {
+                            writer.write_sample(sample).expect("Failed to write sample");
+                        }
+                        writer.finalize().expect("Failed to finalize WAV");
+                    }
+                    let wav_bytes = wav_data.into_inner();
+
+                    let url = match &state.config.backend {
+                        BackendConfig::WhisperCpp { url } => url.clone(),
+                    };
+                    let client = transcriber::WhisperClient::new(url);
+
+                    println!("Transcribing...");
+                    let stream = tokio_stream::iter(vec![Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from(wav_bytes))]);
+                    let bytes_only_stream = tokio_stream::StreamExt::filter_map(stream, |res| res.ok());
+                    
+                    match client.stream_transcription(Box::pin(bytes_only_stream)).await {
+                        Ok(mut transcription_stream) => {
+                            let mut full_text = String::new();
+                            while let Some(res) = futures_util::StreamExt::next(&mut transcription_stream).await {
+                                match res {
+                                    Ok(resp) => {
+                                        if resp.is_final {
+                                            full_text = resp.text;
+                                        } else if !resp.text.is_empty() {
+                                            full_text = resp.text;
+                                        }
+                                    },
+                                    Err(e) => eprintln!("Transcription error: {:?}", e),
+                                }
+                            }
+                            
+                            if !full_text.is_empty() {
+                                let elapsed = stop_time.elapsed();
+                                let delay = std::time::Duration::from_millis(state.config.typing_delay_ms);
+                                if elapsed < delay {
+                                    let remaining = delay - elapsed;
+                                    println!("Transcribed: '{}'. Delaying {}ms more before typing...", full_text, remaining.as_millis());
+                                    tokio::time::sleep(remaining).await;
+                                } else {
+                                    println!("Transcribed: '{}'. Typing immediately.", full_text);
+                                }
+                                let _ = proxy.type_string(&full_text).await;
+                            } else {
+                                println!("No text transcribed.");
+                            }
+                        },
+                        Err(e) => eprintln!("Failed to start transcription: {:?}", e),
+                    }
+
+                    // Restore volume and play end sound
+                    audio_mgr.restore_and_play_end(&proxy, &state.config.sound, state.original_volume).await;
+
+                    // Resume MPRIS
+                    for p_state in state.paused_players {
+                        if let Ok(player_proxy) = mpris_client.get_proxy(&p_state.service).await {
+                            if let Ok(status) = player_proxy.playback_status().await {
+                                if status == "Paused" {
+                                    if let Ok(metadata) = player_proxy.metadata().await {
+                                        let current_track_id = mpris::extract_track_id(&metadata);
+                                        if current_track_id == p_state.track_id {
+                                            println!("Resuming player: {}", p_state.service);
+                                            let _ = player_proxy.play().await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    println!("Dictation cycle complete.");
+                } else {
+                    println!("Shortcut pressed! Starting recording...");
+                    let config = Config::load();
+                    
+                    // 1. MPRIS Pause
+                    let mut paused_players = Vec::new();
+                    if let Ok(players) = mpris_client.find_players().await {
+                        for service in players {
+                            if let Ok(player_proxy) = mpris_client.get_proxy(&service).await {
+                                if let Ok(status) = player_proxy.playback_status().await {
+                                    if status == "Playing" {
+                                        if let Ok(metadata) = player_proxy.metadata().await {
+                                            let track_id = mpris::extract_track_id(&metadata);
+                                            println!("Pausing player: {} (track: {})", service, track_id);
+                                            let _ = player_proxy.pause().await;
+                                            paused_players.push(mpris::PlayerState {
+                                                service: service.clone(),
+                                                track_id,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. Duck volume and play start sound
+                    let original_volume = audio_mgr.duck_and_play_start(&proxy, &config.sound).await;
+
+                    // 3. Start Recorder
+                    let recorder = recorder::AudioRecorder::new();
+                    let output = recorder.start_recording();
+                    
+                    recording_state = Some(RecordingState {
+                        samples: Vec::new(),
+                        recorder_output: output,
+                        original_volume,
+                        paused_players,
+                        config,
+                    });
+                }
+            }
+            // Pull audio samples if recording
+            Some(bytes) = async {
+                if let Some(state) = &mut recording_state {
+                    tokio_stream::StreamExt::next(&mut state.recorder_output.audio_stream).await
+                } else {
+                    std::future::pending().await
+                }
+            } => {
+                if let Some(state) = &mut recording_state {
+                    let chunk: &[f32] = bytemuck::cast_slice(&bytes);
+                    state.samples.extend_from_slice(chunk);
+                }
+            }
+        }
+    }
+}
+
 async fn test_extension(cmd: ExtensionCommands) {
     let conn = Connection::session().await.expect("Failed to connect to session bus");
     let proxy = ExtensionProxy::new(&conn).await.expect("Failed to create extension proxy");
@@ -275,6 +471,10 @@ async fn test_extension(cmd: ExtensionCommands) {
         ExtensionCommands::RegisterShortcut { shortcut } => {
             println!("Registering shortcut: '{}'", shortcut);
             proxy.register_shortcut(&shortcut).await.expect("Failed to register shortcut");
+        }
+        ExtensionCommands::UnregisterShortcut => {
+            println!("Unregistering shortcut...");
+            proxy.unregister_shortcut().await.expect("Failed to unregister shortcut");
         }
         ExtensionCommands::GetVolume => {
             let v = proxy.get_volume().await.expect("Failed to get volume");
@@ -431,6 +631,200 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
         .build();
     general_group.add(&mic_row);
 
+    let initial_shortcut = {
+        let cfg = config.lock().unwrap();
+        cfg.shortcut.clone()
+    };
+
+    let shortcut_row = ActionRow::builder()
+        .title("Shortcut")
+        .subtitle(glib::markup_escape_text(&initial_shortcut))
+        .build();
+
+    let edit_button = Button::builder()
+        .label("Edit")
+        .valign(gtk4::Align::Center)
+        .build();
+
+    let clear_button = Button::builder()
+        .icon_name("edit-clear-symbolic")
+        .valign(gtk4::Align::Center)
+        .has_frame(false)
+        .build();
+
+    shortcut_row.add_suffix(&edit_button);
+    shortcut_row.add_suffix(&clear_button);
+
+    let config_clone = config.clone();
+    let runtime_clone = runtime.clone();
+    let shortcut_row_clone = shortcut_row.clone();
+    clear_button.connect_clicked(move |_| {
+        shortcut_row_clone.set_subtitle("");
+        let mut cfg = config_clone.lock().unwrap();
+        cfg.shortcut = "".to_string();
+        cfg.save();
+
+        let rt = runtime_clone.clone();
+        rt.spawn(async move {
+            let conn = Connection::session().await.ok();
+            if let Some(c) = conn {
+                if let Ok(proxy) = ExtensionProxy::new(&c).await {
+                    let _ = proxy.unregister_shortcut().await;
+                }
+            }
+        });
+    });
+
+    let config_clone = config.clone();
+    let runtime_clone = runtime.clone();
+    let shortcut_row_clone = shortcut_row.clone();
+    let window_clone = window.clone();
+    edit_button.connect_clicked(move |_| {
+        let config = config_clone.clone();
+        let runtime = runtime_clone.clone();
+        let shortcut_row = shortcut_row_clone.clone();
+        
+        // Unregister current shortcut while recording
+        let rt = runtime.clone();
+        rt.spawn(async move {
+            let conn = Connection::session().await.ok();
+            if let Some(c) = conn {
+                if let Ok(proxy) = ExtensionProxy::new(&c).await {
+                    let _ = proxy.unregister_shortcut().await;
+                }
+            }
+        });
+
+        // Create recording modal
+        let dialog = gtk4::Window::builder()
+            .title("Record Shortcut")
+            .default_width(300)
+            .default_height(150)
+            .modal(true)
+            .transient_for(&window_clone)
+            .build();
+
+        let vbox = GtkBox::builder()
+            .orientation(Orientation::Vertical)
+            .spacing(12)
+            .margin_top(24)
+            .margin_bottom(24)
+            .margin_start(24)
+            .margin_end(24)
+            .build();
+
+        let label = gtk4::Label::new(Some("Press the key combination you want to use"));
+        vbox.append(&label);
+
+        let status_label = gtk4::Label::new(Some("Listening..."));
+        vbox.append(&status_label);
+
+        let cancel_button = Button::with_label("Cancel");
+        vbox.append(&cancel_button);
+
+        dialog.set_child(Some(&vbox));
+
+        let key_controller = gtk4::EventControllerKey::new();
+        let dialog_clone = dialog.clone();
+        let config_clone = config.clone();
+        let runtime_clone = runtime.clone();
+        let shortcut_row_clone = shortcut_row.clone();
+        
+        key_controller.connect_key_pressed(move |_controller, keyval, _keycode, state| {
+            let modifiers = state & (gtk4::gdk::ModifierType::CONTROL_MASK | 
+                                    gtk4::gdk::ModifierType::ALT_MASK | 
+                                    gtk4::gdk::ModifierType::SHIFT_MASK | 
+                                    gtk4::gdk::ModifierType::SUPER_MASK);
+            if modifiers.is_empty() && keyval.name().map(|n| n.starts_with("F")).unwrap_or(false) == false {
+                // Ignore plain keys that aren't function keys
+                return glib::Propagation::Proceed;
+            }
+
+            let mut accel = String::new();
+            if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK) { accel.push_str("<Control>"); }
+            if state.contains(gtk4::gdk::ModifierType::ALT_MASK) { accel.push_str("<Alt>"); }
+            if state.contains(gtk4::gdk::ModifierType::SHIFT_MASK) { accel.push_str("<Shift>"); }
+            if state.contains(gtk4::gdk::ModifierType::SUPER_MASK) { accel.push_str("<Super>"); }
+
+            if let Some(name) = keyval.name() {
+                // Map GDK names to what GNOME expects (simplified)
+                let name = match name.as_str() {
+                    "Control_L" | "Control_R" | "Alt_L" | "Alt_R" | "Shift_L" | "Shift_R" | "Super_L" | "Super_R" => return glib::Propagation::Proceed,
+                    n => n,
+                };
+                accel.push_str(name);
+            }
+
+            if !accel.is_empty() {
+                let mut cfg = config_clone.lock().unwrap();
+                cfg.shortcut = accel.clone();
+                cfg.save();
+                shortcut_row_clone.set_subtitle(&glib::markup_escape_text(&accel));
+
+                let rt = runtime_clone.clone();
+                let accel_to_reg = accel.clone();
+                rt.spawn(async move {
+                    let conn = Connection::session().await.ok();
+                    if let Some(c) = conn {
+                        if let Ok(proxy) = ExtensionProxy::new(&c).await {
+                            let _ = proxy.register_shortcut(&accel_to_reg).await;
+                        }
+                    }
+                });
+
+                dialog_clone.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+
+        dialog.add_controller(key_controller);
+        
+        let dialog_cancel = dialog.clone();
+        let runtime_cancel = runtime.clone();
+        let config_cancel = config.clone();
+        cancel_button.connect_clicked(move |_| {
+            // Restore previous shortcut if cancelled
+            let prev_accel = config_cancel.lock().unwrap().shortcut.clone();
+            let rt = runtime_cancel.clone();
+            rt.spawn(async move {
+                if !prev_accel.is_empty() {
+                    let conn = Connection::session().await.ok();
+                    if let Some(c) = conn {
+                        if let Ok(proxy) = ExtensionProxy::new(&c).await {
+                            let _ = proxy.register_shortcut(&prev_accel).await;
+                        }
+                    }
+                }
+            });
+            dialog_cancel.close();
+        });
+
+        dialog.present();
+    });
+    general_group.add(&shortcut_row);
+
+    let initial_delay = {
+        let cfg = config.lock().unwrap();
+        cfg.typing_delay_ms
+    };
+
+    let delay_row = EntryRow::builder()
+        .title("Typing Delay (ms)")
+        .text(&initial_delay.to_string())
+        .build();
+
+    let config_clone = config.clone();
+    delay_row.connect_text_notify(move |row| {
+        if let Ok(val) = row.text().to_string().parse::<u64>() {
+            let mut cfg = config_clone.lock().unwrap();
+            cfg.typing_delay_ms = val;
+            cfg.save();
+        }
+    });
+    general_group.add(&delay_row);
+
     // Whisper Server URL
     let whisper_group = PreferencesGroup::builder()
         .title("Transcription (Whisper)")
@@ -512,7 +906,7 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
 
     // Sound settings
     let sound_group = PreferencesGroup::builder()
-        .title("Sound & Volume")
+        .title("Sound &amp; Volume")
         .build();
 
     let (initial_start_sound, initial_end_sound, initial_ducking_volume) = {

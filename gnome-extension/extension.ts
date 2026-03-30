@@ -35,6 +35,7 @@ const DictationInterfaceXML = `
     <method name="RegisterShortcut">
       <arg type="s" name="shortcut" direction="in"/>
     </method>
+    <method name="UnregisterShortcut"/>
     <method name="GetVolume">
       <arg type="d" name="volume" direction="out"/>
     </method>
@@ -142,6 +143,10 @@ export default class DictationExtension extends Extension {
                     this._registerShortcut(args[0]);
                     invocation.return_value(null);
                     break;
+                case 'UnregisterShortcut':
+                    this._unregisterShortcut();
+                    invocation.return_value(null);
+                    break;
                 case 'GetVolume':
                     const volume = this._getVolume();
                     invocation.return_value(GLib.Variant.new('(d)', [volume]));
@@ -242,6 +247,8 @@ export default class DictationExtension extends Extension {
 
     private _registerShortcut(shortcut: string) {
         this._unregisterShortcut();
+        if (!shortcut) return;
+
         this._currentShortcut = shortcut;
 
         let settings = this.getSettings('org.gnome.shell.extensions.dictation');
