@@ -121,6 +121,42 @@ pub fn build_ui(app: &Application, runtime: Arc<Runtime>) {
     });
     general_group.add(&delay_row);
 
+    let initial_recording_color = {
+        let cfg = config.lock().unwrap();
+        cfg.recording_color.clone()
+    };
+
+    let recording_color_row = EntryRow::builder()
+        .title("Recording Color (Hex)")
+        .text(&initial_recording_color)
+        .build();
+
+    let config_clone = config.clone();
+    recording_color_row.connect_text_notify(move |row| {
+        let mut cfg = config_clone.lock().unwrap();
+        cfg.recording_color = row.text().to_string();
+        cfg.save();
+    });
+    general_group.add(&recording_color_row);
+
+    let initial_transcribing_color = {
+        let cfg = config.lock().unwrap();
+        cfg.transcribing_color.clone()
+    };
+
+    let transcribing_color_row = EntryRow::builder()
+        .title("Transcribing Color (Hex)")
+        .text(&initial_transcribing_color)
+        .build();
+
+    let config_clone = config.clone();
+    transcribing_color_row.connect_text_notify(move |row| {
+        let mut cfg = config_clone.lock().unwrap();
+        cfg.transcribing_color = row.text().to_string();
+        cfg.save();
+    });
+    general_group.add(&transcribing_color_row);
+
     // Whisper Server URL
     let whisper_group = PreferencesGroup::builder()
         .title("Transcription (Whisper)")

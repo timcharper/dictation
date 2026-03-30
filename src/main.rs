@@ -266,7 +266,7 @@ async fn test_extension(cmd: ExtensionCommands) {
                 ("test1", "Test Item 1"),
                 ("test2", "Test Item 2"),
                 ("quit", "Quit"),
-            ]).await.expect("Failed to update menu");
+            ], "idle", "").await.expect("Failed to update menu");
         }
         ExtensionCommands::Listen => {
             println!("Listening for extension events. Press Ctrl+C to stop.");

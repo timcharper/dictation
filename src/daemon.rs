@@ -20,6 +20,12 @@ struct RecordingState {
 
 pub async fn run_daemon() {
     let conn = Connection::session().await.expect("Failed to connect to session bus");
+    
+    // Own a name so the extension can track our presence
+    conn.request_name("org.gnome.dictation.Daemon")
+        .await
+        .expect("Failed to request daemon name. Is another instance running?");
+
     let proxy = ExtensionProxy::new(&conn).await.expect("Failed to create extension proxy");
     let audio_mgr = audio::AudioManager::new();
     let mpris_client = mpris::MprisClient::new(conn.clone());
@@ -30,7 +36,7 @@ pub async fn run_daemon() {
     // Initial menu update
     proxy.update("audio-input-microphone-symbolic", vec![
         ("settings", "Settings"),
-    ]).await.expect("Failed to update extension menu");
+    ], "idle", "").await.expect("Failed to update extension menu");
 
     // Register shortcut from config
     proxy.register_shortcut(&config.shortcut).await.expect("Failed to register shortcut");
@@ -54,6 +60,9 @@ pub async fn run_daemon() {
                 if let Some(mut state) = recording_state.take() {
                     println!("Shortcut pressed! Stopping recording and transcribing...");
                     let stop_time = std::time::Instant::now();
+
+                    // Signal transcribing state
+                    let _ = proxy.update("emblem-synchronizing-symbolic", vec![("settings", "Settings")], "transcribing", &state.config.transcribing_color).await;
 
                     // Restore volume and play end sound immediately
                     audio_mgr.restore_and_play_end(&proxy, &state.config.sound, state.original_volume).await;
@@ -133,10 +142,13 @@ pub async fn run_daemon() {
                         }
                     }
                     println!("Dictation cycle complete.");
+                    let _ = proxy.update("audio-input-microphone-symbolic", vec![("settings", "Settings")], "idle", "").await;
                 } else {
                     println!("Shortcut pressed! Starting recording...");
                     let config = Config::load();
                     
+                    let _ = proxy.update("media-record-symbolic", vec![("settings", "Settings")], "recording", &config.recording_color).await;
+
                     // 1. MPRIS Pause
                     let mut paused_players = Vec::new();
                     if let Ok(players) = mpris_client.find_players().await {

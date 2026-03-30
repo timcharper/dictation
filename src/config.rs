@@ -15,6 +15,10 @@ pub struct Config {
     pub shortcut: String,
     #[serde(default = "default_typing_delay")]
     pub typing_delay_ms: u64,
+    #[serde(default = "default_recording_color")]
+    pub recording_color: String,
+    #[serde(default = "default_transcribing_color")]
+    pub transcribing_color: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -43,6 +47,14 @@ fn default_shortcut() -> String {
 
 fn default_typing_delay() -> u64 {
     500
+}
+
+fn default_recording_color() -> String {
+    "#ef4444".to_string()
+}
+
+fn default_transcribing_color() -> String {
+    "#06b6d4".to_string()
 }
 
 fn default_ducking_volume() -> f32 {
@@ -84,6 +96,8 @@ impl Default for Config {
             sound: SoundConfig::default(),
             shortcut: default_shortcut(),
             typing_delay_ms: default_typing_delay(),
+            recording_color: default_recording_color(),
+            transcribing_color: default_transcribing_color(),
         }
     }
 }

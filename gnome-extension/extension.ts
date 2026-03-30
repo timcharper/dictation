@@ -21,6 +21,8 @@ const DictationInterfaceXML = `
     <method name="Update">
       <arg type="s" name="icon_name" direction="in"/>
       <arg type="a(ss)" name="menu_items" direction="in"/>
+      <arg type="s" name="state" direction="in"/>
+      <arg type="s" name="color" direction="in"/>
     </method>
     <method name="RaiseApp"/>
     <method name="GetClipboard">
@@ -56,6 +58,8 @@ export default class DictationExtension extends Extension {
     private _currentShortcut: string | null = null;
     private _ownNameId: number = 0;
     private _interfaceInfo: Gio.DBusInterfaceInfo | null = null;
+    private _breathingTimeoutId: number = 0;
+    private _watchId: number = 0;
 
     enable() {
         this._indicator = null;
@@ -86,14 +90,32 @@ export default class DictationExtension extends Extension {
             null
         );
 
-        // 2. Initial Indicator
-        this._createIndicator('audio-input-microphone-symbolic', []);
+        // Watch for the daemon. Only show indicator if daemon is running.
+        this._watchId = Gio.bus_watch_name(
+            Gio.BusType.SESSION,
+            'org.gnome.dictation.Daemon',
+            Gio.BusNameWatcherFlags.NONE,
+            null,
+            () => {
+                if (this._indicator) {
+                    this._indicator.destroy();
+                    this._indicator = null;
+                }
+                this._clearBreathing();
+            }
+        );
 
         console.log(`[${this.uuid}] Enabled`);
     }
 
     disable() {
         this._unregisterShortcut();
+        this._clearBreathing();
+
+        if (this._watchId) {
+            Gio.bus_unwatch_name(this._watchId);
+            this._watchId = 0;
+        }
 
         if (this._ownNameId) {
             Gio.bus_unown_name(this._ownNameId);
@@ -121,7 +143,7 @@ export default class DictationExtension extends Extension {
 
             switch (methodName) {
                 case 'Update':
-                    this._createIndicator(args[0], args[1]);
+                    this._createIndicator(args[0], args[1], args[2], args[3]);
                     invocation.return_value(null);
                     break;
                 case 'RaiseApp':
@@ -270,7 +292,9 @@ export default class DictationExtension extends Extension {
         );
     }
 
-    private _createIndicator(iconName: string, menuItems: [string, string][]) {
+    private _createIndicator(iconName: string, menuItems: [string, string][], state: string = 'idle', color: string = '') {
+        this._clearBreathing();
+
         if (this._indicator) {
             this._indicator.destroy();
         }
@@ -281,6 +305,27 @@ export default class DictationExtension extends Extension {
             style_class: 'system-status-icon',
         });
         this._indicator.add_child(icon);
+
+        if (color) {
+            icon.set_style(`color: ${color};`);
+        }
+
+        if (state === 'transcribing') {
+            let alpha = 255;
+            let direction = -15;
+            this._breathingTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+                alpha += direction;
+                if (alpha <= 100) {
+                    alpha = 100;
+                    direction = 15;
+                } else if (alpha >= 255) {
+                    alpha = 255;
+                    direction = -15;
+                }
+                icon.set_opacity(alpha);
+                return GLib.SOURCE_CONTINUE;
+            });
+        }
 
         menuItems.forEach(([id, label]) => {
             let item = new PopupMenu.PopupMenuItem(label);
@@ -297,6 +342,13 @@ export default class DictationExtension extends Extension {
         });
 
         Main.panel.addToStatusArea(this.uuid, this._indicator);
+    }
+
+    private _clearBreathing() {
+        if (this._breathingTimeoutId) {
+            GLib.Source.remove(this._breathingTimeoutId);
+            this._breathingTimeoutId = 0;
+        }
     }
 
     private _unregisterShortcut() {
