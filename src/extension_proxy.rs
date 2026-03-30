@@ -13,8 +13,6 @@ pub trait Extension {
     async fn type_string(&self, text: &str) -> zbus::Result<()>;
     async fn register_shortcut(&self, shortcut: &str) -> zbus::Result<()>;
     async fn unregister_shortcut(&self) -> zbus::Result<()>;
-    async fn get_volume(&self) -> zbus::Result<f64>;
-    async fn set_volume(&self, volume: f64) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn menu_item_selected(&self, id: &str) -> zbus::Result<()>;

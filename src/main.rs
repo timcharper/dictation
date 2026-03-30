@@ -103,10 +103,6 @@ enum ExtensionCommands {
     RegisterShortcut { shortcut: String },
     /// Unregister the global shortcut
     UnregisterShortcut,
-    /// Get system volume
-    GetVolume,
-    /// Set system volume
-    SetVolume { level: f64 },
 }
 
 fn main() -> glib::ExitCode {
@@ -148,18 +144,17 @@ fn main() -> glib::ExitCode {
             glib::ExitCode::SUCCESS
         }
         Some(Commands::Volume { level }) => {
-            let rt = Runtime::new().expect("Failed to create Tokio runtime");
-            rt.block_on(async move {
-                let conn = Connection::session().await.expect("Failed to connect to session bus");
-                let proxy = ExtensionProxy::new(&conn).await.expect("Failed to create extension proxy");
-                if let Some(l) = level {
-                    proxy.set_volume(l).await.expect("Failed to set volume");
-                    println!("Volume set to {}", l);
+            let audio_mgr = audio::AudioManager::new();
+            if let Some(l) = level {
+                audio_mgr.set_volume(l);
+                println!("Volume set to {}", l);
+            } else {
+                if let Some(v) = audio_mgr.get_volume() {
+                    println!("Current volume: {:.2}", v);
                 } else {
-                    let v = proxy.get_volume().await.expect("Failed to get volume");
-                    println!("Current volume: {}", v);
+                    println!("Failed to get volume");
                 }
-            });
+            }
             glib::ExitCode::SUCCESS
         }
         Some(Commands::Mpris { subcommand }) => {
@@ -293,14 +288,6 @@ async fn test_extension(cmd: ExtensionCommands) {
         ExtensionCommands::UnregisterShortcut => {
             println!("Unregistering shortcut...");
             proxy.unregister_shortcut().await.expect("Failed to unregister shortcut");
-        }
-        ExtensionCommands::GetVolume => {
-            let v = proxy.get_volume().await.expect("Failed to get volume");
-            println!("Current volume: {}", v);
-        }
-        ExtensionCommands::SetVolume { level } => {
-            proxy.set_volume(level).await.expect("Failed to set volume");
-            println!("Volume set to {}", level);
         }
     }
 }

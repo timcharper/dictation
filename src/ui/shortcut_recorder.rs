@@ -1,5 +1,4 @@
 use gtk4::prelude::*;
-use libadwaita::prelude::*;
 use gtk4::{glib, Button, Window, Box as GtkBox, Orientation};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;

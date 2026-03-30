@@ -38,12 +38,6 @@ const DictationInterfaceXML = `
       <arg type="s" name="shortcut" direction="in"/>
     </method>
     <method name="UnregisterShortcut"/>
-    <method name="GetVolume">
-      <arg type="d" name="volume" direction="out"/>
-    </method>
-    <method name="SetVolume">
-      <arg type="d" name="volume" direction="in"/>
-    </method>
     <signal name="MenuItemSelected">
       <arg type="s" name="id"/>
     </signal>
@@ -169,55 +163,12 @@ export default class DictationExtension extends Extension {
                     this._unregisterShortcut();
                     invocation.return_value(null);
                     break;
-                case 'GetVolume':
-                    const volume = this._getVolume();
-                    invocation.return_value(GLib.Variant.new('(d)', [volume]));
-                    break;
-                case 'SetVolume':
-                    this._setVolume(args[0]);
-                    invocation.return_value(null);
-                    break;
                 default:
                     invocation.return_error_literal(Gio.DBusError, Gio.DBusError.UNKNOWN_METHOD, `Unknown method ${methodName}`);
             }
         } catch (e) {
             console.error(`[${this.uuid}] Error handling DBus method ${methodName}: ${e}`);
             invocation.return_error_literal(Gio.DBusError, Gio.DBusError.FAILED, `${e}`);
-        }
-    }
-
-    private _getVolume(): number {
-        try {
-            // This works for GNOME 44+ Quick Settings
-            let vol = (Main.panel.statusArea.aggregateMenu as any)?._volume?._output;
-            if (!vol) vol = (Main.panel.statusArea.aggregateMenu as any)?._volume; // Fallback
-            
-            if (vol && vol._control) {
-                const sink = vol._control.get_default_sink();
-                if (sink) {
-                    return sink.volume / vol._control.get_vol_max_norm();
-                }
-            }
-        } catch (e) {
-            console.error(`[${this.uuid}] Error getting volume: ${e}`);
-        }
-        return 1.0;
-    }
-
-    private _setVolume(volume: number) {
-        try {
-            let vol = (Main.panel.statusArea.aggregateMenu as any)?._volume?._output;
-            if (!vol) vol = (Main.panel.statusArea.aggregateMenu as any)?._volume;
-            
-            if (vol && vol._control) {
-                const sink = vol._control.get_default_sink();
-                if (sink) {
-                    sink.volume = volume * vol._control.get_vol_max_norm();
-                    sink.push_volume();
-                }
-            }
-        } catch (e) {
-            console.error(`[${this.uuid}] Error setting volume: ${e}`);
         }
     }
 

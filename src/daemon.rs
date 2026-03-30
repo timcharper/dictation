@@ -1,4 +1,3 @@
-use tokio_stream::StreamExt;
 use zbus::Connection;
 
 use crate::audio;

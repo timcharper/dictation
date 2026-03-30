@@ -2,7 +2,8 @@ use rodio::{Decoder, OutputStream, Sink};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use crate::extension_proxy::ExtensionProxy;
+use pulsectl::controllers::SinkController;
+use pulsectl::controllers::DeviceControl;
 use crate::config::SoundConfig;
 
 pub struct AudioManager {
@@ -16,6 +17,28 @@ impl AudioManager {
         Self {
             _stream: stream,
             _handle: handle,
+        }
+    }
+
+    pub fn get_volume(&self) -> Option<f64> {
+        let mut controller = SinkController::create().ok()?;
+        let default_sink = controller.get_default_device().ok()?;
+        let vol = default_sink.volume.avg().0;
+        let max = libpulse_binding::volume::Volume::NORMAL.0 as f64;
+        Some(vol as f64 / max)
+    }
+
+    pub fn set_volume(&self, volume: f64) {
+        if let Ok(mut controller) = SinkController::create() {
+            if let Ok(default_sink) = controller.get_default_device() {
+                let max = libpulse_binding::volume::Volume::NORMAL.0 as f64;
+                let target_vol = (volume * max) as u32;
+                let mut vol = default_sink.volume.clone();
+                for channel in vol.get_mut() {
+                    channel.0 = target_vol;
+                }
+                let _ = controller.set_device_volume_by_index(default_sink.index, &vol);
+            }
         }
     }
 
@@ -47,33 +70,59 @@ impl AudioManager {
         sink.detach();
     }
 
-    pub async fn duck_and_play_start(&self, proxy: &ExtensionProxy<'_>, config: &SoundConfig) -> Option<f64> {
-        let original_volume = match proxy.get_volume().await {
-            Ok(v) => Some(v),
+    pub fn play_sound_sync(&self, path: impl AsRef<Path>) {
+        let path = path.as_ref();
+        if !path.exists() {
+            eprintln!("Sound file not found: {:?}", path);
+            return;
+        }
+
+        let file = match File::open(path) {
+            Ok(f) => f,
             Err(e) => {
-                eprintln!("Failed to get original volume: {:?}", e);
-                None
+                eprintln!("Failed to open sound file: {:?}", e);
+                return;
             }
         };
 
-        if original_volume.is_some() {
-            let _ = proxy.set_volume(config.ducking_volume as f64).await;
+        let source = match Decoder::new(BufReader::new(file)) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to decode sound file: {:?}", e);
+                return;
+            }
+        };
+
+        let sink = Sink::try_new(&self._handle).expect("Failed to create sink");
+        sink.append(source);
+        sink.sleep_until_end();
+        // Add a small delay to ensure the hardware buffer is drained
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    pub async fn duck_and_play_start(&self, _proxy_not_used: &crate::extension_proxy::ExtensionProxy<'_>, config: &SoundConfig) -> Option<f64> {
+        let original_volume = self.get_volume();
+
+        // Play start sound at original volume
+        if let Some(path) = &config.start_sound {
+            self.play_sound_sync(path);
         }
 
-        if let Some(path) = &config.start_sound {
-            self.play_sound(path);
+        // Duck volume AFTER the sound has finished
+        if original_volume.is_some() {
+            self.set_volume(config.ducking_volume as f64);
         }
 
         original_volume
     }
 
-    pub async fn restore_and_play_end(&self, proxy: &ExtensionProxy<'_>, config: &SoundConfig, original_volume: Option<f64>) {
+    pub async fn restore_and_play_end(&self, _proxy_not_used: &crate::extension_proxy::ExtensionProxy<'_>, config: &SoundConfig, original_volume: Option<f64>) {
         if let Some(path) = &config.end_sound {
             self.play_sound(path);
         }
 
         if let Some(vol) = original_volume {
-            let _ = proxy.set_volume(vol).await;
+            self.set_volume(vol);
         }
     }
 }
