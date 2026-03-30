@@ -1,10 +1,8 @@
-use std::sync::Arc;
-use tokio::runtime::Runtime;
 use tokio_stream::StreamExt;
 use zbus::Connection;
 
 use crate::audio;
-use crate::config::{Config, BackendConfig};
+use crate::config::Config;
 use crate::extension_proxy::ExtensionProxy;
 use crate::mpris;
 use crate::recorder;
@@ -57,7 +55,7 @@ pub async fn run_daemon() {
                 }
             }
             Some(_) = tokio_stream::StreamExt::next(&mut shortcut_stream) => {
-                if let Some(mut state) = recording_state.take() {
+                if let Some(state) = recording_state.take() {
                     println!("Shortcut pressed! Stopping recording and transcribing...");
                     let stop_time = std::time::Instant::now();
 

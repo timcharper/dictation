@@ -14,7 +14,7 @@ pub fn record_shortcut(
     on_complete: impl Fn(String) + 'static,
 ) {
     let window_clone = parent_window.clone();
-    let config_clone = config.clone();
+    let _config_clone = config.clone();
     let runtime_clone = runtime.clone();
     let on_complete = Arc::new(on_complete);
 

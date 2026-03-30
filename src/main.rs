@@ -22,7 +22,7 @@ mod transcriber_factory;
 mod ui;
 mod daemon;
 
-use config::{Config, BackendConfig};
+use config::Config;
 use extension_proxy::ExtensionProxy;
 use transcriber_factory::create_transcriber;
 
