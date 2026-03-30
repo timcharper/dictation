@@ -89,8 +89,15 @@ export default class DictationExtension extends Extension {
             Gio.BusType.SESSION,
             'org.gnome.dictation.Daemon',
             Gio.BusNameWatcherFlags.NONE,
-            null,
             () => {
+                // Daemon (re)appeared — unregister any stale shortcut so the daemon
+                // can re-register cleanly via RegisterShortcut. The indicator will be
+                // recreated when the daemon calls Update.
+                console.log(`[${this.uuid}] Daemon connected`);
+                this._unregisterShortcut();
+            },
+            () => {
+                console.log(`[${this.uuid}] Daemon disconnected`);
                 if (this._indicator) {
                     this._indicator.destroy();
                     this._indicator = null;
