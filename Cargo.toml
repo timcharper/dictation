@@ -11,7 +11,7 @@ atspi-proxies = "0.13.0"
 bytemuck = "1.25.0"
 bytes = "1.11.1"
 clap = { version = "4.6.0", features = ["derive"] }
-cpal = "0.17.3"
+cpal = "0.15.3"
 directories = "6.0.0"
 futures-lite = "2.6.1"
 futures-util = "0.3.32"
@@ -21,6 +21,7 @@ gtk4 = "0.11.1"
 hound = "3.5.1"
 libadwaita = { version = "0.9.1", features = ["v1_2", "v1_4", "v1_6"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
+rodio = { version = "0.19.0", features = ["vorbis"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tokio = { version = "1.50.0", features = ["full"] }

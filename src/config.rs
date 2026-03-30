@@ -9,6 +9,8 @@ pub struct Config {
     pub backend: BackendConfig,
     #[serde(default)]
     pub llm: LlmConfig,
+    #[serde(default)]
+    pub sound: SoundConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -21,6 +23,28 @@ pub enum BackendConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LlmConfig {
     Ollama { url: String, model: String },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SoundConfig {
+    pub start_sound: Option<String>,
+    pub end_sound: Option<String>,
+    #[serde(default = "default_ducking_volume")]
+    pub ducking_volume: f32,
+}
+
+fn default_ducking_volume() -> f32 {
+    0.1
+}
+
+impl Default for SoundConfig {
+    fn default() -> Self {
+        Self {
+            start_sound: None,
+            end_sound: None,
+            ducking_volume: default_ducking_volume(),
+        }
+    }
 }
 
 impl Default for BackendConfig {
@@ -45,6 +69,7 @@ impl Default for Config {
         Self {
             backend: BackendConfig::default(),
             llm: LlmConfig::default(),
+            sound: SoundConfig::default(),
         }
     }
 }

@@ -16,6 +16,8 @@ mod transcriber;
 mod accessibility;
 mod config;
 mod extension_proxy;
+mod audio;
+mod mpris;
 
 use config::{Config, BackendConfig, LlmConfig};
 use extension_proxy::ExtensionProxy;
@@ -50,6 +52,31 @@ enum Commands {
         #[command(subcommand)]
         subcommand: ExtensionCommands,
     },
+    /// Test sound playback
+    Sound {
+        /// Path to the sound file
+        path: PathBuf,
+    },
+    /// Test volume control
+    Volume {
+        /// Volume level (0.0 to 1.0)
+        level: Option<f64>,
+    },
+    /// Interact with MPRIS media players
+    Mpris {
+        #[command(subcommand)]
+        subcommand: MprisCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum MprisCommands {
+    /// Show playback status and metadata for all active MPRIS players
+    Status,
+    /// Send Play to the active player
+    Play,
+    /// Send Pause to the active player
+    Pause,
 }
 
 #[derive(Subcommand)]
@@ -68,6 +95,10 @@ enum ExtensionCommands {
     Listen,
     /// Register a global shortcut
     RegisterShortcut { shortcut: String },
+    /// Get system volume
+    GetVolume,
+    /// Set system volume
+    SetVolume { level: f64 },
 }
 
 fn main() -> glib::ExitCode {
@@ -102,6 +133,35 @@ fn main() -> glib::ExitCode {
             });
             glib::ExitCode::SUCCESS
         }
+        Some(Commands::Sound { path }) => {
+            let audio_mgr = audio::AudioManager::new();
+            audio_mgr.play_sound(path);
+            // Wait for sound to play (sink.detach() means it's background, but for a CLI tool we need to wait)
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            glib::ExitCode::SUCCESS
+        }
+        Some(Commands::Volume { level }) => {
+            let rt = Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(async move {
+                let conn = Connection::session().await.expect("Failed to connect to session bus");
+                let proxy = ExtensionProxy::new(&conn).await.expect("Failed to create extension proxy");
+                if let Some(l) = level {
+                    proxy.set_volume(l).await.expect("Failed to set volume");
+                    println!("Volume set to {}", l);
+                } else {
+                    let v = proxy.get_volume().await.expect("Failed to get volume");
+                    println!("Current volume: {}", v);
+                }
+            });
+            glib::ExitCode::SUCCESS
+        }
+        Some(Commands::Mpris { subcommand }) => {
+            let rt = Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(async move {
+                test_mpris(subcommand).await;
+            });
+            glib::ExitCode::SUCCESS
+        }
         None => {
             let app = Application::builder()
                 .application_id(APP_ID)
@@ -114,6 +174,53 @@ fn main() -> glib::ExitCode {
             });
 
             app.run()
+        }
+    }
+}
+
+async fn test_mpris(cmd: MprisCommands) {
+    let conn = Connection::session().await.expect("Failed to connect to session bus");
+    let client = mpris::MprisClient::new(conn);
+
+    let players = client.find_players().await.expect("Failed to list MPRIS players");
+    if players.is_empty() {
+        println!("No MPRIS players found.");
+        return;
+    }
+
+    match cmd {
+        MprisCommands::Status => {
+            for service in &players {
+                let proxy = client.get_proxy(service).await.expect("Failed to get player proxy");
+                let status = proxy.playback_status().await.unwrap_or_else(|_| "unknown".into());
+                let metadata = proxy.metadata().await.unwrap_or_default();
+                let title = mpris::string_field(&metadata, "xesam:title");
+                let artist = mpris::string_field(&metadata, "xesam:artist");
+                let album = mpris::string_field(&metadata, "xesam:album");
+                let track_id = mpris::extract_track_id(&metadata);
+                println!("Player: {}", service);
+                println!("  Status:   {}", status);
+                if !title.is_empty()  { println!("  Title:    {}", title); }
+                if !artist.is_empty() { println!("  Artist:   {}", artist); }
+                if !album.is_empty()  { println!("  Album:    {}", album); }
+                println!("  Track ID: {}", track_id);
+            }
+        }
+        MprisCommands::Pause => {
+            let service = players.iter()
+                .find(|_| true)  // first player; caller picks while something is Playing
+                .expect("No players");
+            let proxy = client.get_proxy(service).await.expect("Failed to get player proxy");
+            proxy.pause().await.expect("Failed to pause");
+            println!("Paused: {}", service);
+        }
+        MprisCommands::Play => {
+            let service = players.iter()
+                .find(|_| true)
+                .expect("No players");
+            let proxy = client.get_proxy(service).await.expect("Failed to get player proxy");
+            proxy.play().await.expect("Failed to play");
+            println!("Playing: {}", service);
         }
     }
 }
@@ -169,6 +276,14 @@ async fn test_extension(cmd: ExtensionCommands) {
             println!("Registering shortcut: '{}'", shortcut);
             proxy.register_shortcut(&shortcut).await.expect("Failed to register shortcut");
         }
+        ExtensionCommands::GetVolume => {
+            let v = proxy.get_volume().await.expect("Failed to get volume");
+            println!("Current volume: {}", v);
+        }
+        ExtensionCommands::SetVolume { level } => {
+            proxy.set_volume(level).await.expect("Failed to set volume");
+            println!("Volume set to {}", level);
+        }
     }
 }
 
@@ -195,7 +310,7 @@ async fn test_microphone(duration_secs: u64) {
     
     let spec = hound::WavSpec {
         channels: output.config.channels as u16,
-        sample_rate: output.config.sample_rate,
+        sample_rate: output.config.sample_rate.0,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
     };
@@ -395,9 +510,65 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
     llm_group.add(&ollama_url_row);
     llm_group.add(&ollama_model_row);
 
+    // Sound settings
+    let sound_group = PreferencesGroup::builder()
+        .title("Sound & Volume")
+        .build();
+
+    let (initial_start_sound, initial_end_sound, initial_ducking_volume) = {
+        let cfg = config.lock().unwrap();
+        (
+            cfg.sound.start_sound.clone().unwrap_or_default(),
+            cfg.sound.end_sound.clone().unwrap_or_default(),
+            cfg.sound.ducking_volume,
+        )
+    };
+
+    let start_sound_row = EntryRow::builder()
+        .title("Start Sound (Path)")
+        .text(&initial_start_sound)
+        .build();
+    let config_clone = config.clone();
+    start_sound_row.connect_text_notify(move |row| {
+        let mut cfg = config_clone.lock().unwrap();
+        let text = row.text().to_string();
+        cfg.sound.start_sound = if text.is_empty() { None } else { Some(text) };
+        cfg.save();
+    });
+
+    let end_sound_row = EntryRow::builder()
+        .title("End Sound (Path)")
+        .text(&initial_end_sound)
+        .build();
+    let config_clone = config.clone();
+    end_sound_row.connect_text_notify(move |row| {
+        let mut cfg = config_clone.lock().unwrap();
+        let text = row.text().to_string();
+        cfg.sound.end_sound = if text.is_empty() { None } else { Some(text) };
+        cfg.save();
+    });
+
+    let ducking_row = EntryRow::builder()
+        .title("Ducking Volume (0.0 - 1.0)")
+        .text(&initial_ducking_volume.to_string())
+        .build();
+    let config_clone = config.clone();
+    ducking_row.connect_text_notify(move |row| {
+        if let Ok(val) = row.text().to_string().parse::<f32>() {
+            let mut cfg = config_clone.lock().unwrap();
+            cfg.sound.ducking_volume = val.clamp(0.0, 1.0);
+            cfg.save();
+        }
+    });
+
+    sound_group.add(&start_sound_row);
+    sound_group.add(&end_sound_row);
+    sound_group.add(&ducking_row);
+
     page.add(&general_group);
     page.add(&whisper_group);
     page.add(&llm_group);
+    page.add(&sound_group);
 
     content_vbox.append(&page);
 
@@ -413,7 +584,7 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
         let config = config_for_recording.clone();
         rt.spawn(async move {
             let recorder = recorder::AudioRecorder::new();
-            let output = recorder.start_recording();
+            let recorder::RecorderOutput { stream, audio_stream, .. } = recorder.start_recording();
             
             let url = {
                 let cfg = config.lock().unwrap();
@@ -424,7 +595,12 @@ fn build_ui(app: &Application, runtime: Arc<Runtime>) {
             
             let client = transcriber::WhisperClient::new(url);
             
-            let mut transcription_stream = match client.stream_transcription(Box::pin(output.audio_stream)).await {
+            // To satisfy Send bound, we MUST NOT hold 'stream' across await.
+            // But we need it to keep recording. 
+            // Since this is just a TEST button, we'll forget the stream so it keeps running.
+            std::mem::forget(stream);
+
+            let mut transcription_stream = match client.stream_transcription(Box::pin(audio_stream)).await {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to start transcription stream: {:?}", e);
