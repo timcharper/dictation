@@ -66,6 +66,8 @@ enum ExtensionCommands {
     UpdateMenu,
     /// Listen for extension events (shortcut, menu selection)
     Listen,
+    /// Register a global shortcut
+    RegisterShortcut { shortcut: String },
 }
 
 fn main() -> glib::ExitCode {
@@ -162,6 +164,10 @@ async fn test_extension(cmd: ExtensionCommands) {
                     }
                 }
             }
+        }
+        ExtensionCommands::RegisterShortcut { shortcut } => {
+            println!("Registering shortcut: '{}'", shortcut);
+            proxy.register_shortcut(&shortcut).await.expect("Failed to register shortcut");
         }
     }
 }
