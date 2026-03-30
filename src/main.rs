@@ -280,6 +280,9 @@ async fn run_daemon() {
                 if let Some(state) = recording_state.take() {
                     println!("Shortcut pressed! Stopping recording and transcribing...");
                     let stop_time = std::time::Instant::now();
+
+                    // Restore volume and play end sound immediately
+                    audio_mgr.restore_and_play_end(&proxy, &state.config.sound, state.original_volume).await;
                     
                     // Create a WAV in memory to send to whisper
                     let spec = hound::WavSpec {
@@ -341,9 +344,6 @@ async fn run_daemon() {
                         },
                         Err(e) => eprintln!("Failed to start transcription: {:?}", e),
                     }
-
-                    // Restore volume and play end sound
-                    audio_mgr.restore_and_play_end(&proxy, &state.config.sound, state.original_volume).await;
 
                     // Resume MPRIS
                     for p_state in state.paused_players {

@@ -12,6 +12,17 @@ pub struct TranscriptionResponse {
     pub is_final: bool,
 }
 
+impl TranscriptionResponse {
+    pub fn sanitize(&mut self) {
+        let text = self.text.chars().map(|c| match c {
+            '\r' | '\n' | '\x0B' | '\x0C' | '\u{0085}' | '\u{2028}' | '\u{2029}' => ' ',
+            _ => c,
+        }).collect::<String>();
+        
+        self.text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+}
+
 pub struct WhisperClient {
     client: Client,
     url: String,
@@ -55,12 +66,14 @@ impl WhisperClient {
                     // Try to deserialize the whole chunk. 
                     // whisper.cpp /inference usually returns a single JSON at the end if not streaming.
                     // But if it returns multiple, we might need a more sophisticated line-by-line parser.
-                    serde_json::from_slice::<TranscriptionResponse>(&b)
+                    let mut resp = serde_json::from_slice::<TranscriptionResponse>(&b)
                         .map_err(|e| {
                             // Fallback: maybe it's just raw text or multiple JSONs?
                             // For now, let's just report the error if it's not valid JSON
                             format!("JSON parse error: {} (body: {})", e, String::from_utf8_lossy(&b))
-                        })
+                        })?;
+                    resp.sanitize();
+                    Ok(resp)
                 })
         });
 
