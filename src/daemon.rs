@@ -1,5 +1,6 @@
 use std::time::Duration;
 use zbus::Connection;
+use zbus::fdo::DBusProxy;
 
 use crate::audio;
 use crate::config::Config;
@@ -55,6 +56,12 @@ pub async fn run_daemon() {
             None
         }
     };
+
+    // Watch for the extension's bus name disappearing — this fires reliably when
+    // GNOME Shell restarts (signal streams just go silent without returning None).
+    let dbus_proxy = DBusProxy::new(&conn).await.expect("Failed to connect to org.freedesktop.DBus");
+    let mut name_owner_stream = dbus_proxy.receive_name_owner_changed().await
+        .expect("Failed to subscribe to NameOwnerChanged");
 
     loop {
         println!("Connecting to extension...");
@@ -133,6 +140,16 @@ pub async fn run_daemon() {
                         eprintln!("Sleep event stream ended unexpectedly.");
                         // Don't break — keep running without sleep detection
                         sleep_stream = None;
+                    }
+                }
+                name_owner_signal = tokio_stream::StreamExt::next(&mut name_owner_stream) => {
+                    if let Some(sig) = name_owner_signal {
+                        if let Ok(args) = sig.args() {
+                            if args.name == "org.gnome.dictation.Extension" && args.new_owner.as_deref().unwrap_or("").is_empty() {
+                                println!("Extension bus name disappeared (GNOME Shell restart?). Reconnecting...");
+                                break;
+                            }
+                        }
                     }
                 }
                 menu_signal = tokio_stream::StreamExt::next(&mut menu_stream) => {
