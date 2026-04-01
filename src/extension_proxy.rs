@@ -6,7 +6,7 @@
     default_path = "/org/gnome/dictation/Extension"
 )]
 pub trait Extension {
-    async fn update(&self, icon_name: &str, menu_items: Vec<(&str, &str)>, state: &str, color: &str) -> zbus::Result<()>;
+    async fn update(&self, icon_name: &str, menu_items: Vec<(String, String)>, state: &str, color: &str) -> zbus::Result<()>;
     async fn raise_app(&self) -> zbus::Result<()>;
     async fn get_clipboard(&self) -> zbus::Result<String>;
     async fn set_clipboard(&self, text: &str) -> zbus::Result<()>;

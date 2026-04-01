@@ -15,6 +15,7 @@ mod accessibility;
 mod config;
 mod extension_proxy;
 mod audio;
+mod history;
 mod mpris;
 mod traits;
 mod transcriber_whisper;
@@ -258,9 +259,9 @@ async fn test_extension(cmd: ExtensionCommands) {
         ExtensionCommands::UpdateMenu => {
             println!("Updating menu...");
             proxy.update("audio-input-microphone-symbolic", vec![
-                ("test1", "Test Item 1"),
-                ("test2", "Test Item 2"),
-                ("quit", "Quit"),
+                ("test1".to_string(), "Test Item 1".to_string()),
+                ("test2".to_string(), "Test Item 2".to_string()),
+                ("quit".to_string(), "Quit".to_string()),
             ], "idle", "").await.expect("Failed to update menu");
         }
         ExtensionCommands::Listen => {

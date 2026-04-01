@@ -37,6 +37,7 @@ pub async fn run_daemon() {
 
     let audio_mgr = audio::AudioManager::new();
     let mpris_client = mpris::MprisClient::new(conn.clone());
+    let mut history_mgr = crate::history::HistoryManager::load();
 
     // Subscribe to system sleep/wake events once — the D-Bus connection survives sleep
     let login_proxy = Login1ManagerProxy::new(&conn).await;
@@ -78,9 +79,13 @@ pub async fn run_daemon() {
         let config = Config::load();
         println!("Connected to extension. Shortcut: {}. Initializing...", config.shortcut);
 
-        if let Err(e) = proxy.update("audio-input-microphone-symbolic", vec![
-            ("settings", "Settings"),
-        ], "idle", "").await {
+        let get_menu_items = |hm: &crate::history::HistoryManager| {
+            let mut items = vec![("settings".to_string(), "Settings".to_string())];
+            items.extend(hm.menu_items());
+            items
+        };
+
+        if let Err(e) = proxy.update("audio-input-microphone-symbolic", get_menu_items(&history_mgr), "idle", "").await {
             eprintln!("Failed initial extension update: {e}. Retrying in 2s...");
             tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
@@ -160,6 +165,13 @@ pub async fn run_daemon() {
                                 println!("Opening settings dialog...");
                                 let current_exe = std::env::current_exe().expect("Failed to get current exe");
                                 let _ = std::process::Command::new(current_exe).spawn();
+                            } else if args.id.starts_with("history_") {
+                                if let Ok(index) = args.id["history_".len()..].parse::<usize>() {
+                                    if let Some(entry) = history_mgr.entries.get(index) {
+                                        println!("Copying history item {} to clipboard", index);
+                                        let _ = proxy.set_clipboard(&entry.text).await;
+                                    }
+                                }
                             }
                         }
                         None => {
@@ -176,7 +188,7 @@ pub async fn run_daemon() {
                                 let stop_time = std::time::Instant::now();
 
                                 // Signal transcribing state
-                                let _ = proxy.update("emblem-synchronizing-symbolic", vec![("settings", "Settings")], "transcribing", &state.config.transcribing_color).await;
+                                let _ = proxy.update("emblem-synchronizing-symbolic", get_menu_items(&history_mgr), "transcribing", &state.config.transcribing_color).await;
 
                                 // Restore volume and play end sound immediately
                                 audio_mgr.restore_and_play_end(&proxy, &state.config.sound, state.original_volume).await;
@@ -232,6 +244,7 @@ pub async fn run_daemon() {
                                                 println!("Transcribed: '{}'. Typing immediately.", full_text);
                                             }
                                             let _ = proxy.type_string(&full_text).await;
+                                            history_mgr.add_entry(full_text);
                                         } else {
                                             println!("No text transcribed.");
                                         }
@@ -256,12 +269,12 @@ pub async fn run_daemon() {
                                     }
                                 }
                                 println!("Dictation cycle complete.");
-                                let _ = proxy.update("audio-input-microphone-symbolic", vec![("settings", "Settings")], "idle", "").await;
+                                let _ = proxy.update("audio-input-microphone-symbolic", get_menu_items(&history_mgr), "idle", "").await;
                             } else {
                                 println!("Shortcut pressed! Starting recording...");
                                 let config = Config::load();
 
-                                let _ = proxy.update("media-record-symbolic", vec![("settings", "Settings")], "recording", &config.recording_color).await;
+                                let _ = proxy.update("media-record-symbolic", get_menu_items(&history_mgr), "recording", &config.recording_color).await;
 
                                 // 1. MPRIS Pause
                                 let mut paused_players = Vec::new();
