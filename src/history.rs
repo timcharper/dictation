@@ -33,10 +33,10 @@ impl HistoryManager {
 
     fn get_history_path() -> PathBuf {
         let proj_dirs = ProjectDirs::from("org", "gnome", "dictation")
-            .expect("Could not find config directory");
-        let config_dir = proj_dirs.config_dir();
-        fs::create_dir_all(config_dir).ok();
-        config_dir.join("history.json")
+            .expect("Could not find project directories");
+        let cache_dir = proj_dirs.cache_dir();
+        fs::create_dir_all(cache_dir).ok();
+        cache_dir.join("history.json")
     }
 
     pub fn add_entry(&mut self, text: String) {
