@@ -20,6 +20,7 @@ mod mpris;
 mod traits;
 mod transcriber_whisper;
 mod transcriber_factory;
+mod vad;
 mod ui;
 mod daemon;
 

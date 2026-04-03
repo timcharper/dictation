@@ -8,6 +8,7 @@ use crate::extension_proxy::ExtensionProxy;
 use crate::mpris;
 use crate::recorder;
 use crate::transcriber_factory::create_transcriber;
+use crate::vad::VadProcessor;
 
 #[zbus::proxy(
     interface = "org.freedesktop.login1.Manager",
@@ -25,6 +26,8 @@ struct RecordingState {
     original_volume: Option<f64>,
     paused_players: Vec<mpris::PlayerState>,
     config: Config,
+    vad_processor: VadProcessor,
+    is_speaking: bool,
 }
 
 pub async fn run_daemon() {
@@ -304,6 +307,11 @@ pub async fn run_daemon() {
                                 // 3. Start Recorder
                                 let recorder = recorder::AudioRecorder::new();
                                 let output = recorder.start_recording();
+                                
+                                let vad_processor = VadProcessor::new(
+                                    output.config.sample_rate.0,
+                                    output.config.channels as u16,
+                                );
 
                                 recording_state = Some(RecordingState {
                                     samples: Vec::new(),
@@ -311,6 +319,8 @@ pub async fn run_daemon() {
                                     original_volume,
                                     paused_players,
                                     config,
+                                    vad_processor,
+                                    is_speaking: false,
                                 });
                             }
                         }
@@ -331,6 +341,22 @@ pub async fn run_daemon() {
                     if let Some(state) = &mut recording_state {
                         let chunk: &[f32] = bytemuck::cast_slice(&bytes);
                         state.samples.extend_from_slice(chunk);
+
+                        let speaking = state.vad_processor.process_samples(chunk);
+                        if speaking != state.is_speaking {
+                            state.is_speaking = speaking;
+                            let icon = if speaking {
+                                "audio-input-microphone-high-symbolic"
+                            } else {
+                                "media-record-symbolic"
+                            };
+                            let color = if speaking {
+                                "#00FF00" // Bright green when speaking
+                            } else {
+                                &state.config.recording_color
+                            };
+                            let _ = proxy.update(icon, get_menu_items(&history_mgr), "recording", color).await;
+                        }
                     }
                 }
             }
