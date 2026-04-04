@@ -11,13 +11,13 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-const APP_ID = 'org.gnome.dictation';
-const BUS_NAME = 'org.gnome.dictation.Extension';
-const OBJECT_PATH = '/org/gnome/dictation/Extension';
+const APP_ID = 'com.timcharper.dictation';
+const BUS_NAME = 'com.timcharper.dictation.Extension';
+const OBJECT_PATH = '/com/timcharper/dictation/Extension';
 
 const DictationInterfaceXML = `
 <node>
-  <interface name="org.gnome.dictation.Extension">
+  <interface name="com.timcharper.dictation.Extension">
     <method name="Update">
       <arg type="s" name="icon_name" direction="in"/>
       <arg type="a(ss)" name="menu_items" direction="in"/>
@@ -87,7 +87,7 @@ export default class DictationExtension extends Extension {
         // Watch for the daemon. Only show indicator if daemon is running.
         this._watchId = Gio.bus_watch_name(
             Gio.BusType.SESSION,
-            'org.gnome.dictation.Daemon',
+            'com.timcharper.dictation.Daemon',
             Gio.BusNameWatcherFlags.NONE,
             () => {
                 // Daemon (re)appeared — unregister any stale shortcut so the daemon

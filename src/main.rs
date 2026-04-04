@@ -21,7 +21,7 @@ mod ui;
 mod daemon;
 mod commands;
 
-const APP_ID: &str = "org.gnome.dictation";
+const APP_ID: &str = "com.timcharper.dictation";
 
 #[derive(Parser)]
 #[command(name = "dictation")]

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-UUID="dictation@timharper"
+UUID="dictation@timcharper.com"
 SANDBOX_DIR="/tmp/gnome-sandbox-dictation"
 BUS_FILE="/tmp/nested_dbus_address"
 PID_FILE="/tmp/nested_gnome.pid"

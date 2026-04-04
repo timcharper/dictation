@@ -1,10 +1,10 @@
 {
   "name": "Dictation Integration",
   "description": "Integration with the Dictation application, providing a custom tray icon, shortcut keys, and focus management.",
-  "uuid": "dictation@timharper",
+  "uuid": "dictation@timcharper.com",
   "shell-version": [
     "49"
   ],
   "settings-schema": "org.gnome.shell.extensions.dictation",
-  "url": ""
+  "url": "https://dictation.timcharper.com"
 }

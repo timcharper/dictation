@@ -12,7 +12,7 @@ Use the `test/scripts/child-gnome-session.sh` script. This script creates an iso
 
 - **Wait**: It takes about 8-10 seconds to fully initialize.
 - **Status**: Check if it's running with `./test/scripts/child-gnome-session.sh status`.
-- **Log Monitoring**: Monitor logs with `tail -f /tmp/nested_gnome.log`. Look for `[dictation@timharper] Enabled` to confirm success.
+- **Log Monitoring**: Monitor logs with `tail -f /tmp/nested_gnome.log`. Look for `[dictation@timcharper.com] Enabled` to confirm success.
 - **Verification**: You can also verify by listing enabled extensions:
   ```sh
   export DBUS_SESSION_BUS_ADDRESS=$(cat /tmp/nested_dbus_address)

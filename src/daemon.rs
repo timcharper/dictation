@@ -47,7 +47,7 @@ pub async fn run_daemon() {
     let conn = Connection::session().await.expect("Failed to connect to session bus");
 
     // Own a name so the extension can track our presence
-    conn.request_name("org.gnome.dictation.Daemon")
+    conn.request_name("com.timcharper.dictation.Daemon")
         .await
         .expect("Failed to request daemon name. Is another instance running?");
 
@@ -167,7 +167,7 @@ pub async fn run_daemon() {
                 name_owner_signal = tokio_stream::StreamExt::next(&mut name_owner_stream) => {
                     if let Some(sig) = name_owner_signal {
                         if let Ok(args) = sig.args() {
-                            if args.name == "org.gnome.dictation.Extension" && args.new_owner.as_deref().unwrap_or("").is_empty() {
+                            if args.name == "com.timcharper.dictation.Extension" && args.new_owner.as_deref().unwrap_or("").is_empty() {
                                 println!("Extension bus name disappeared (GNOME Shell restart?). Reconnecting...");
                                 break;
                             }

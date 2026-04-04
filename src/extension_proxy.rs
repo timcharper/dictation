@@ -1,9 +1,9 @@
 // use zbus::proxy;
 
 #[zbus::proxy(
-    interface = "org.gnome.dictation.Extension",
-    default_service = "org.gnome.dictation.Extension",
-    default_path = "/org/gnome/dictation/Extension"
+    interface = "com.timcharper.dictation.Extension",
+    default_service = "com.timcharper.dictation.Extension",
+    default_path = "/com/timcharper/dictation/Extension"
 )]
 pub trait Extension {
     async fn update(&self, icon_name: &str, menu_items: Vec<(String, String)>, state: &str, color: &str) -> zbus::Result<()>;

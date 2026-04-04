@@ -45,7 +45,7 @@ Link the extension to your local GNOME Shell extensions directory and compile th
 mkdir -p ~/.local/share/gnome-shell/extensions/
 
 # Link the extension (replace $(pwd) with the absolute path to the project root)
-ln -s "$(pwd)/gnome-extension" ~/.local/share/gnome-shell/extensions/dictation@timharper
+ln -s "$(pwd)/gnome-extension" ~/.local/share/gnome-shell/extensions/dictation@timcharper.com
 
 # Compile schemas
 glib-compile-schemas gnome-extension/schemas/
@@ -58,7 +58,7 @@ To apply changes, you must restart GNOME Shell and then enable the extension.
 - **On Wayland**: You must log out and log back in.
 - **Enable via CLI**:
   ```sh
-  gnome-extensions enable dictation@timharper
+  gnome-extensions enable dictation@timcharper.com
   ```
 
 ---
@@ -103,7 +103,7 @@ To see logs from the extension in your host session:
 ```sh
 journalctl -f -o cat /usr/bin/gnome-shell
 ```
-Look for lines prefixed with `[dictation@timharper]`.
+Look for lines prefixed with `[dictation@timcharper.com]`.
 
 ## Development Workflow
 
