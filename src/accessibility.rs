@@ -5,6 +5,12 @@ use atspi::proxy::accessible::ObjectRefExt;
 use atspi_common::{State, ObjectRefOwned};
 use std::error::Error;
 
+#[derive(Debug)]
+pub struct CursorInfo {
+    pub _offset: i32,
+    pub text_before: String,
+}
+
 pub struct AccessibilityManager {
     connection: AccessibilityConnection,
 }
@@ -52,9 +58,39 @@ impl AccessibilityManager {
         Ok(Vec::new())
     }
 
+    /// Returns information about the text cursor in the currently focused element.
+    pub async fn get_cursor_info(&self) -> Result<Option<CursorInfo>, Box<dyn Error + Send + Sync>> {
+        let active_window_ref = match self.find_active_window_ref().await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(None),
+            Err(_) => return Ok(None),
+        };
+
+        if let Ok(window) = active_window_ref.as_accessible_proxy(self.connection.connection()).await {
+            if let Ok(Some(focused_ref)) = self.find_focused_node_ref(&window, 0).await {
+                if let Ok(node) = focused_ref.as_accessible_proxy(self.connection.connection()).await {
+                    let proxies = match node.proxies().await {
+                        Ok(p) => p,
+                        Err(_) => return Ok(None),
+                    };
+                    if let Ok(text_proxy) = proxies.text().await {
+                        if let Ok(offset) = text_proxy.caret_offset().await {
+                            if offset >= 0 {
+                                let start = (offset - 100).max(0);
+                                let text_before = text_proxy.get_text(start, offset).await.unwrap_or_default();
+                                return Ok(Some(CursorInfo { _offset: offset, text_before }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     async fn find_active_window_ref(&self) -> Result<Option<ObjectRefOwned>, Box<dyn Error + Send + Sync>> {
         let root = self.connection.root_accessible_on_registry().await?;
-        let child_count = root.child_count().await?;
+        let child_count = root.child_count().await.unwrap_or(0);
 
         for i in 0..child_count {
             if let Ok(app_ref) = root.get_child_at_index(i).await {

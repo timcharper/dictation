@@ -27,6 +27,7 @@ impl InternalTranscriptionResponse {
 pub struct WhisperClient {
     client: Client,
     url: String,
+    prompt: Option<String>,
 }
 
 impl WhisperClient {
@@ -34,6 +35,7 @@ impl WhisperClient {
         Self {
             client: Client::new(),
             url,
+            prompt: None,
         }
     }
 }
@@ -44,8 +46,12 @@ impl Transcriber for WhisperClient {
         &self,
         audio_stream: Pin<Box<dyn Stream<Item = Bytes> + Send>>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<TranscriptionResult, String>> + Send>>, String> {
-        let try_stream = audio_stream.map(|b| Ok::<Bytes, std::io::Error>(b));
-        
+        let mut audio_stream = audio_stream;
+        let mut full_body = Vec::new();
+        while let Some(chunk) = audio_stream.next().await {
+            full_body.extend_from_slice(&chunk);
+        }
+
         let mut target_url = self.url.clone();
         if !target_url.contains("/inference") {
             if !target_url.ends_with('/') {
@@ -54,10 +60,16 @@ impl Transcriber for WhisperClient {
             target_url.push_str("inference");
         }
 
+        let mut query_params = Vec::new();
+        if let Some(prompt) = &self.prompt {
+            query_params.push(("prompt", prompt.as_str()));
+        }
+
         let response = self.client
             .post(&target_url)
+            .query(&query_params)
             .header("Content-Type", "audio/wav")
-            .body(reqwest::Body::wrap_stream(try_stream))
+            .body(full_body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -78,5 +90,32 @@ impl Transcriber for WhisperClient {
         });
 
         Ok(Box::pin(stream))
+    }
+
+    fn set_prompt(&mut self, prompt: String) {
+        if !prompt.is_empty() {
+            // Sanitization: replace em dash with hyphen, keep alphanumeric and punctuation
+            let sanitized: String = prompt
+                .chars()
+                .map(|c| match c {
+                    '—' => '-',
+                    c if c.is_alphanumeric() || c.is_ascii_punctuation() || c == ' ' => c,
+                    _ => ' ',
+                })
+                .collect();
+
+            // Keep last 200 words before the cursor
+            let words: Vec<&str> = sanitized.split_whitespace().collect();
+            let truncated = if words.len() > 200 {
+                words[words.len() - 200..].join(" ")
+            } else {
+                words.join(" ")
+            };
+
+            if !truncated.is_empty() {
+                println!("[INFO] Whisper prompt context (sanitized): '{}'", truncated);
+                self.prompt = Some(truncated);
+            }
+        }
     }
 }

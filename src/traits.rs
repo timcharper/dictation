@@ -9,6 +9,8 @@ pub trait Transcriber: Send + Sync {
         &self,
         audio_stream: Pin<Box<dyn Stream<Item = Bytes> + Send>>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<TranscriptionResult, String>> + Send>>, String>;
+
+    fn set_prompt(&mut self, _prompt: String) {}
 }
 
 #[derive(Debug)]

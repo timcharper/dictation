@@ -335,7 +335,7 @@ async fn test_transcribe(path: PathBuf) {
     println!("Transcribing file: {:?}", path);
     
     let config = Config::load();
-    let transcriber = create_transcriber(&config.backend);
+    let transcriber = create_transcriber(&config.backend, None);
     
     println!("Using configured backend");
     

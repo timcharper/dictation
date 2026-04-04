@@ -9,6 +9,7 @@ use crate::mpris;
 use crate::recorder;
 use crate::transcriber_factory::create_transcriber;
 use crate::vad::VadProcessor;
+use crate::accessibility::AccessibilityManager;
 
 #[zbus::proxy(
     interface = "org.freedesktop.login1.Manager",
@@ -28,6 +29,7 @@ struct RecordingState {
     config: Config,
     vad_processor: VadProcessor,
     is_speaking: bool,
+    cursor_context: Option<String>,
 }
 
 pub async fn run_daemon() {
@@ -39,6 +41,7 @@ pub async fn run_daemon() {
         .expect("Failed to request daemon name. Is another instance running?");
 
     let audio_mgr = audio::AudioManager::new();
+    let accessibility_mgr = AccessibilityManager::new().await.ok();
     let mpris_client = mpris::MprisClient::new(conn.clone());
     let mut history_mgr = crate::history::HistoryManager::load();
 
@@ -214,7 +217,7 @@ pub async fn run_daemon() {
                                 }
                                 let wav_bytes = wav_data.into_inner();
 
-                                let transcriber = create_transcriber(&state.config.backend);
+                                let transcriber = create_transcriber(&state.config.backend, state.cursor_context.clone());
 
                                 println!("Transcribing...");
                                 let stream = tokio_stream::iter(vec![Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from(wav_bytes))]);
@@ -246,7 +249,17 @@ pub async fn run_daemon() {
                                             } else {
                                                 println!("Transcribed: '{}'. Typing immediately.", full_text);
                                             }
-                                            let _ = proxy.type_string(&full_text).await;
+                                            // Prepend space if cursor context exists and doesn't end with a space
+                                            let text_to_type = if let Some(ctx) = &state.cursor_context {
+                                                if !ctx.is_empty() && !ctx.ends_with(' ') {
+                                                    format!(" {}", full_text)
+                                                } else {
+                                                    full_text.clone()
+                                                }
+                                            } else {
+                                                full_text.clone()
+                                            };
+                                            let _ = proxy.type_string(&text_to_type).await;
                                             history_mgr.add_entry(full_text);
                                         } else {
                                             println!("No text transcribed.");
@@ -313,6 +326,13 @@ pub async fn run_daemon() {
                                     output.config.channels as u16,
                                 );
 
+                                let mut cursor_context = None;
+                                if let Some(mgr) = &accessibility_mgr {
+                                    if let Ok(Some(info)) = mgr.get_cursor_info().await {
+                                        cursor_context = Some(info.text_before);
+                                    }
+                                }
+
                                 recording_state = Some(RecordingState {
                                     samples: Vec::new(),
                                     recorder_output: output,
@@ -321,6 +341,7 @@ pub async fn run_daemon() {
                                     config,
                                     vad_processor,
                                     is_speaking: false,
+                                    cursor_context,
                                 });
                             }
                         }
