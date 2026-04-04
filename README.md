@@ -74,6 +74,16 @@ cargo run -- settings   # or ./target/release/dictation
 
 Set your Whisper server URL (default: `http://localhost:58080`) and configure a keyboard shortcut.
 
+### 5. Verify with Doctor
+
+Once everything is set up, run the health check to confirm all components are working:
+
+```sh
+./target/release/dictation doctor
+```
+
+This checks your microphone, the Whisper backend (by sending a real test audio clip), and that the GNOME extension is running. Fix any reported issues before proceeding.
+
 ---
 
 ## Running as a System Service
