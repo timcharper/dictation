@@ -1,7 +1,7 @@
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use libadwaita::{Application, ApplicationWindow, PreferencesGroup, ActionRow, PreferencesPage, EntryRow, HeaderBar, ToolbarView};
-use gtk4::{Box as GtkBox, Orientation, Button, FileDialog, glib, gio};
+use gtk4::{Box as GtkBox, Orientation, Button, FileDialog, glib};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use crate::config::{Config, BackendConfig, LlmConfig};

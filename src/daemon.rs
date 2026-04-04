@@ -93,7 +93,7 @@ pub async fn run_daemon() {
             }
         };
 
-        let config = Config::load();
+        let mut config = Config::load();
         println!("Connected to extension. Shortcut: {}. Initializing...", config.shortcut);
 
         let get_menu_items = |hm: &crate::history::HistoryManager| {
@@ -135,6 +135,23 @@ pub async fn run_daemon() {
         println!("Daemon ready. Listening for shortcuts...");
 
         let mut recording_state: Option<RecordingState> = None;
+
+        let config_path = Config::path();
+        let (config_tx, mut config_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let _config_watcher = {
+            use notify::{Watcher, RecursiveMode, EventKind, event::ModifyKind};
+            let tx = config_tx.clone();
+            let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    if matches!(event.kind, EventKind::Modify(ModifyKind::Data(_))) {
+                        let _ = tx.try_send(());
+                    }
+                }
+            }).expect("Failed to create config file watcher");
+            w.watch(&config_path, RecursiveMode::NonRecursive)
+                .expect("Failed to watch config file");
+            w
+        };
 
         loop {
             tokio::select! {
@@ -344,6 +361,15 @@ pub async fn run_daemon() {
                             break;
                         }
                     }
+                }
+                Some(_) = config_rx.recv() => {
+                    let new_config = Config::load();
+                    println!("Config changed, reloading...");
+                    if new_config.shortcut != config.shortcut {
+                        println!("Shortcut changed to '{}', re-registering...", new_config.shortcut);
+                        let _ = proxy.register_shortcut(&new_config.shortcut).await;
+                    }
+                    config = new_config;
                 }
                 // Pull audio samples if recording
                 Some(bytes) = async {
