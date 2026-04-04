@@ -228,6 +228,11 @@ pub async fn run_daemon() {
                                 }
                                 let wav_bytes = wav_data.into_inner();
 
+                                // Save last recording to RAM for debugging (e.g. aplay /dev/shm/dictation_last.wav)
+                                if let Err(e) = std::fs::write("/dev/shm/dictation_last.wav", &wav_bytes) {
+                                    eprintln!("[debug] Failed to save debug WAV: {e}");
+                                }
+
                                 let transcriber = create_transcriber(&state.config.backend, state.cursor_context.clone());
 
                                 println!("Transcribing...");
