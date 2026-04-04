@@ -101,6 +101,7 @@ pub async fn watcher() {
     });
 
     let mut current: Option<atspi_common::ObjectRefOwned> = None;
+    let mut wm_at_last_focus: Option<String> = None;
     let mut poll = tokio::time::interval(std::time::Duration::from_millis(500));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -115,7 +116,11 @@ pub async fn watcher() {
                         };
                         let name = node.name().await.unwrap_or_default();
                         let role = node.get_role().await.map(|r| format!("{r:?}")).unwrap_or_default();
-                        println!("Focus  → {role} \"{name}\"");
+                        wm_at_last_focus = match &extension_proxy {
+                            Some(p) => p.get_focused_window_class().await.ok(),
+                            None => None,
+                        };
+                        println!("Focus  → {role} \"{name}\"  [wm={}]", wm_at_last_focus.as_deref().unwrap_or("?"));
                         current = Some(item);
                     }
                     Some(DrainMsg::WindowActivate(name)) => {
@@ -132,9 +137,18 @@ pub async fn watcher() {
                     Err(_) => continue,
                 };
 
-                let wm_class = match &extension_proxy {
+                let current_wm = match &extension_proxy {
                     Some(p) => p.get_focused_window_class().await.ok().unwrap_or_else(|| "?".to_string()),
                     None => "?".to_string(),
+                };
+
+                let freshness = match wm_at_last_focus.as_deref() {
+                    Some(at_focus) if at_focus == current_wm => "✓ fresh",
+                    Some(at_focus) => {
+                        // current_wm is printed below; print at_focus inline
+                        &format!("✗ STALE (last focus was {at_focus})")
+                    }
+                    None => "? unknown",
                 };
 
                 let text_info = async {
@@ -144,9 +158,9 @@ pub async fn watcher() {
                     let start = (offset - 100).max(0);
                     let text_before = text_proxy.get_text(start, offset).await.unwrap_or_default();
                     Some(format!("  context={text_before:?}"))
-                }.await.unwrap_or_else(|| "  (no AT-SPI context)".to_string());
+                }.await.unwrap_or_default();
 
-                println!("  [wm={wm_class}]{text_info}");
+                println!("  [wm={current_wm} {freshness}]{text_info}");
             }
         }
     }

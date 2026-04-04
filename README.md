@@ -175,19 +175,19 @@ cargo run -- at-spi-watcher
 
 ---
 
-## Application Compatibility (Accessibility Blacklist)
+## Application Compatibility
 
 Dictation uses the Linux accessibility API (AT-SPI) to read the text around your cursor and pass it to Whisper as context, which significantly improves transcription accuracy.
 
-However, some applications — notably Electron-based apps like **Slack** and **Discord** — do not broadcast AT-SPI focus or text events. When you switch to one of these apps and then trigger dictation, the AT-SPI cursor position is stale from the last application that *did* report focus. Without a blacklist, Dictation would silently use that stale context, which can mislead Whisper.
+However, some applications — notably Electron-based apps like **Slack** and **Discord** — do not broadcast AT-SPI focus or text events. When you switch to one of these apps and then trigger dictation, the AT-SPI cursor position is stale from the last application that *did* report focus. Dictation does its best to detect this automatically: it records the focused window's WM class each time an AT-SPI focus event fires, and compares it to the current WM class at dictation time. If they differ, the context is known to be stale and is discarded.
 
-The `accessibility_blacklist` config option lets you list WM class name patterns (Go-style regular expressions) for applications that should never have their AT-SPI context used. Dictation ships with sensible defaults:
+For cases where automatic detection falls short, you can also maintain a manual `accessibility_blacklist` in `~/.config/dictation/dictation.toml` — a list of WM class regex patterns that will always have their context skipped:
 
 ```toml
-accessibility_blacklist = ["^Slack$", "^discord$"]
+accessibility_blacklist = ["^Slack$", "^MyElectronApp$"]
 ```
 
-### Finding the WM class for an app
+### Diagnosing compatibility with at-spi-watcher
 
 Run the AT-SPI watcher, then switch between windows:
 
@@ -195,29 +195,29 @@ Run the AT-SPI watcher, then switch between windows:
 cargo run -- at-spi-watcher
 ```
 
-Each poll line shows the GNOME-reported WM class alongside the current AT-SPI cursor context:
+Each poll line shows the current GNOME WM class, whether the AT-SPI context is fresh or stale, and the context itself:
 
 ```
-Focus  → EditableText "Message"
+Focus  → EditableText "Message input"  [wm=gedit]
 Window → "general - Slack"
-  [wm=Slack]  context="the quick brown fox"
-  [wm=Slack]  context="the quick brown fox"
+  [wm=Slack ✗ STALE (last focus was gedit)]  context="the quick brown fox"
+  [wm=Slack ✗ STALE (last focus was gedit)]  context="the quick brown fox"
 ```
 
-Notice that after switching to Slack, the context doesn't change — it's stale from the previous app. Slack never fired AT-SPI focus events, so the AT-SPI cursor is frozen at wherever it was before you switched. This is the problem: Dictation would silently pass that stale context to Whisper.
+After switching to Slack, the watcher shows `✗ STALE` — Slack never fired an AT-SPI focus event, so the WM class recorded at last focus (`gedit`) no longer matches the current window (`Slack`). Dictation detects this and discards the context automatically.
 
 Compare that with an app that does support AT-SPI:
 
 ```
-Focus  → Text "document.txt"
-  [wm=gedit]  context="the quick brown fox"
-  [wm=gedit]  context="the quick brown fox jumps"
+Focus  → Text "document.txt"  [wm=gedit]
+  [wm=gedit ✓ fresh]  context="the quick brown fox"
+  [wm=gedit ✓ fresh]  context="the quick brown fox jumps"
 ```
 
-The context updates as you type or move the cursor. Apps where the context never updates after switching to them are good candidates for the blacklist. Add their WM class pattern to `~/.config/dictation/dictation.toml`:
+If you encounter an app that shows `✓ fresh` but produces wrong context, add it to the blacklist manually in `~/.config/dictation/dictation.toml`:
 
 ```toml
-accessibility_blacklist = ["^Slack$", "^discord$", "^MyElectronApp$"]
+accessibility_blacklist = ["^MyElectronApp$"]
 ```
 
 ### GNOME Extension Integration

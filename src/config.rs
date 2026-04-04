@@ -64,10 +64,7 @@ fn default_ducking_volume() -> f32 {
 }
 
 fn default_accessibility_blacklist() -> Vec<String> {
-    vec![
-        "^Slack$".to_string(),
-        "^discord$".to_string(),
-    ]
+    vec![]
 }
 
 impl Default for SoundConfig {
