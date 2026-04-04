@@ -328,8 +328,10 @@ pub async fn run_daemon() {
 
                                 let mut cursor_context = None;
                                 if let Some(mgr) = &accessibility_mgr {
-                                    if let Ok(Some(info)) = mgr.get_cursor_info().await {
-                                        cursor_context = Some(info.text_before);
+                                    match mgr.get_cursor_info().await {
+                                        Ok(Some(info)) => cursor_context = Some(info.text_before),
+                                        Ok(None) => {}
+                                        Err(e) => eprintln!("[AT-SPI] get_cursor_info error: {e}"),
                                     }
                                 }
 

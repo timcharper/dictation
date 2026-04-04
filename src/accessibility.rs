@@ -3,7 +3,10 @@ use atspi::AccessibilityConnection;
 use atspi::proxy::proxy_ext::ProxyExt;
 use atspi::proxy::accessible::ObjectRefExt;
 use atspi_common::{State, ObjectRefOwned};
+use atspi::connection::common::events::{object::StateChangedEvent, Event};
 use std::error::Error;
+use std::sync::{Arc, Mutex};
+use futures_lite::StreamExt;
 
 #[derive(Debug)]
 pub struct CursorInfo {
@@ -13,25 +16,79 @@ pub struct CursorInfo {
 
 pub struct AccessibilityManager {
     connection: AccessibilityConnection,
+    focused: Arc<Mutex<Option<ObjectRefOwned>>>,
 }
 
 impl AccessibilityManager {
     pub async fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
         let connection = AccessibilityConnection::new().await?;
-        Ok(Self { connection })
+
+        connection.register_event::<StateChangedEvent>().await?;
+
+        let focused: Arc<Mutex<Option<ObjectRefOwned>>> = Arc::new(Mutex::new(None));
+        let focused_clone = focused.clone();
+        let mut event_stream = connection.event_stream();
+
+        tokio::spawn(async move {
+            while let Some(Ok(ev)) = event_stream.next().await {
+                if let Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) = Ok::<_, ()>(ev) {
+                    if ev.state == State::Focused && ev.enabled {
+                        if let Ok(mut lock) = focused_clone.lock() {
+                            *lock = Some(ev.item);
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Self { connection, focused })
+    }
+
+    /// Returns information about the text cursor in the currently focused element.
+    /// Uses the event-cached focused object — no tree traversal needed.
+    pub async fn get_cursor_info(&self) -> Result<Option<CursorInfo>, Box<dyn Error + Send + Sync>> {
+        let focused_ref = match self.focused.lock().ok().and_then(|g| g.clone()) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let node = match focused_ref.as_accessible_proxy(self.connection.connection()).await {
+            Ok(n) => n,
+            Err(_) => return Ok(None),
+        };
+
+        let proxies = match node.proxies().await {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+
+        let text_proxy = match proxies.text().await {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        let offset = match text_proxy.caret_offset().await {
+            Ok(o) if o >= 0 => o,
+            _ => return Ok(None),
+        };
+
+        let start = (offset - 100).max(0);
+        let text_before = text_proxy.get_text(start, offset).await.unwrap_or_default();
+        Ok(Some(CursorInfo { _offset: offset, text_before }))
     }
 
     /// Returns the text content of the currently focused element and its ancestors.
+    /// Used by the `at-spi` debug command only — tree traversal is acceptable here.
     pub async fn get_focused_context(&self) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
         let active_window_ref = self.find_active_window_ref().await?;
-        
+
         if let Some(window_ref) = active_window_ref {
             if let Ok(window) = window_ref.as_accessible_proxy(self.connection.connection()).await {
                 let focused_ref = self.find_focused_node_ref(&window, 0).await?;
                 let mut context = Vec::new();
 
                 if let Some(mut current_ref) = focused_ref {
-                    for _ in 0..20 { 
+                    for _ in 0..20 {
                         if let Ok(node) = current_ref.as_accessible_proxy(self.connection.connection()).await {
                             if let Ok(Some(text)) = self.get_text_if_supported(&node).await {
                                 let trimmed = text.trim().replace('\u{fffc}', "");
@@ -39,7 +96,7 @@ impl AccessibilityManager {
                                     context.push(trimmed);
                                 }
                             }
-                            
+
                             if let Ok(parent_ref) = node.parent().await {
                                 if parent_ref.is_null() { break; }
                                 current_ref = parent_ref;
@@ -54,38 +111,8 @@ impl AccessibilityManager {
                 return Ok(context);
             }
         }
-        
+
         Ok(Vec::new())
-    }
-
-    /// Returns information about the text cursor in the currently focused element.
-    pub async fn get_cursor_info(&self) -> Result<Option<CursorInfo>, Box<dyn Error + Send + Sync>> {
-        let active_window_ref = match self.find_active_window_ref().await {
-            Ok(Some(r)) => r,
-            Ok(None) => return Ok(None),
-            Err(_) => return Ok(None),
-        };
-
-        if let Ok(window) = active_window_ref.as_accessible_proxy(self.connection.connection()).await {
-            if let Ok(Some(focused_ref)) = self.find_focused_node_ref(&window, 0).await {
-                if let Ok(node) = focused_ref.as_accessible_proxy(self.connection.connection()).await {
-                    let proxies = match node.proxies().await {
-                        Ok(p) => p,
-                        Err(_) => return Ok(None),
-                    };
-                    if let Ok(text_proxy) = proxies.text().await {
-                        if let Ok(offset) = text_proxy.caret_offset().await {
-                            if offset >= 0 {
-                                let start = (offset - 100).max(0);
-                                let text_before = text_proxy.get_text(start, offset).await.unwrap_or_default();
-                                return Ok(Some(CursorInfo { _offset: offset, text_before }));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(None)
     }
 
     async fn find_active_window_ref(&self) -> Result<Option<ObjectRefOwned>, Box<dyn Error + Send + Sync>> {
@@ -113,14 +140,18 @@ impl AccessibilityManager {
     }
 
     async fn find_focused_node_ref(&self, accessible: &AccessibleProxy<'_>, depth: u32) -> Result<Option<ObjectRefOwned>, Box<dyn Error + Send + Sync>> {
-        if depth > 50 { return Ok(None); } 
+        if depth > 50 { return Ok(None); }
 
-        let states = accessible.get_state().await?;
+        let states = match accessible.get_state().await {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
+
         if states.contains(State::Focused) {
-            return Ok(Some(ObjectRefOwned::try_from(accessible)?));
+            return Ok(Some(ObjectRefOwned::try_from(accessible).map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?));
         }
 
-        let child_count = accessible.child_count().await?;
+        let child_count = accessible.child_count().await.unwrap_or(0);
         for i in 0..child_count {
             if let Ok(child_ref) = accessible.get_child_at_index(i).await {
                 if let Ok(child) = child_ref.as_accessible_proxy(self.connection.connection()).await {
@@ -147,7 +178,7 @@ impl AccessibilityManager {
     pub async fn get_visible_text(&self) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
         let active_window_ref = self.find_active_window_ref().await?;
         let mut visible_texts = Vec::new();
-        
+
         if let Some(window_ref) = active_window_ref {
             if let Ok(window) = window_ref.as_accessible_proxy(self.connection.connection()).await {
                 let win_name = window.name().await.unwrap_or_default();
@@ -160,7 +191,7 @@ impl AccessibilityManager {
     }
 
     async fn collect_visible_text_recursive(&self, accessible: &AccessibleProxy<'_>, texts: &mut Vec<String>, depth: u32) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if depth > 20 { return Ok(()); } 
+        if depth > 20 { return Ok(()); }
 
         let states = match accessible.get_state().await {
             Ok(s) => s,
