@@ -21,6 +21,17 @@ trait Login1Manager {
     async fn prepare_for_sleep(&self, active: bool) -> zbus::Result<()>;
 }
 
+/// Characters that, when immediately before the cursor, mean we should NOT prepend a space.
+fn no_space_before_chars() -> &'static [char] {
+    &[
+        ' ', '\n', '\t',       // already whitespace
+        '(', '[', '{', '<',    // opening brackets
+        '"', '\'', '`',        // quotes
+        '-', '@', '#', '/', '\\', // mid-word / start-of-token
+        '$', '£', '€',         // currency
+    ]
+}
+
 struct RecordingState {
     samples: Vec<f32>,
     recorder_output: recorder::RecorderOutput,
@@ -249,15 +260,9 @@ pub async fn run_daemon() {
                                             } else {
                                                 println!("Transcribed: '{}'. Typing immediately.", full_text);
                                             }
-                                            // Prepend space if cursor context exists and doesn't end with a space
-                                            let text_to_type = if let Some(ctx) = &state.cursor_context {
-                                                if !ctx.is_empty() && !ctx.ends_with(' ') {
-                                                    format!(" {}", full_text)
-                                                } else {
-                                                    full_text.clone()
-                                                }
-                                            } else {
-                                                full_text.clone()
+                                            let text_to_type = match state.cursor_context.as_deref().and_then(|s| s.chars().last()) {
+                                                Some(c) if !no_space_before_chars().contains(&c) => format!(" {}", full_text),
+                                                _ => full_text.clone(),
                                             };
                                             let _ = proxy.type_string(&text_to_type).await;
                                             history_mgr.add_entry(full_text);
