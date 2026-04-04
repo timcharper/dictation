@@ -310,20 +310,24 @@ pub fn build_ui(app: &Application, runtime: Arc<Runtime>) {
         let config = config_for_recording.clone();
         rt.spawn(async move {
             let recorder = recorder::AudioRecorder::new();
-            let recorder::RecorderOutput { stream, audio_stream, .. } = recorder.start_recording();
-            
+            let recorder::RecorderOutput { stream, audio_stream, config: audio_config } = recorder.start_recording();
+
             let url = {
                 let cfg = config.lock().unwrap();
                 match &cfg.backend {
                     BackendConfig::WhisperCpp { url } => url.clone(),
                 }
             };
-            
+
             let client = WhisperClient::new(url);
-            
+            let format = crate::traits::AudioFormat {
+                sample_rate: audio_config.sample_rate.0,
+                channels: audio_config.channels as u16,
+            };
+
             std::mem::forget(stream);
 
-            let mut transcription_stream = match <WhisperClient as Transcriber>::stream_transcription(&client, Box::pin(audio_stream)).await {
+            let mut transcription_stream = match <WhisperClient as Transcriber>::stream_transcription(&client, format, Box::pin(audio_stream)).await {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to start transcription stream: {:?}", e);

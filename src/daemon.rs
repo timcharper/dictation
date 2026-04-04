@@ -210,36 +210,18 @@ pub async fn run_daemon() {
                                 // Restore volume and play end sound immediately
                                 audio_mgr.restore_and_play_end(&proxy, &state.config.sound, state.original_volume).await;
 
-                                // Create a WAV in memory to send to whisper
-                                let spec = hound::WavSpec {
-                                    channels: state.recorder_output.config.channels as u16,
+                                let format = crate::traits::AudioFormat {
                                     sample_rate: state.recorder_output.config.sample_rate.0,
-                                    bits_per_sample: 32,
-                                    sample_format: hound::SampleFormat::Float,
+                                    channels: state.recorder_output.config.channels as u16,
                                 };
-
-                                let mut wav_data = std::io::Cursor::new(Vec::new());
-                                {
-                                    let mut writer = hound::WavWriter::new(&mut wav_data, spec).expect("Failed to create WAV writer");
-                                    for sample in state.samples {
-                                        writer.write_sample(sample).expect("Failed to write sample");
-                                    }
-                                    writer.finalize().expect("Failed to finalize WAV");
-                                }
-                                let wav_bytes = wav_data.into_inner();
-
-                                // Save last recording to RAM for debugging (e.g. aplay /dev/shm/dictation_last.wav)
-                                if let Err(e) = std::fs::write("/dev/shm/dictation_last.wav", &wav_bytes) {
-                                    eprintln!("[debug] Failed to save debug WAV: {e}");
-                                }
+                                let raw_bytes = bytes::Bytes::from(bytemuck::cast_slice::<f32, u8>(&state.samples).to_vec());
 
                                 let transcriber = create_transcriber(&state.config.backend, state.cursor_context.clone());
 
                                 println!("Transcribing...");
-                                let stream = tokio_stream::iter(vec![Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from(wav_bytes))]);
-                                let bytes_only_stream = tokio_stream::StreamExt::filter_map(stream, |res| res.ok());
+                                let bytes_only_stream = futures_util::stream::once(async move { raw_bytes });
 
-                                match transcriber.stream_transcription(Box::pin(bytes_only_stream)).await {
+                                match transcriber.stream_transcription(format, Box::pin(bytes_only_stream)).await {
                                     Ok(mut transcription_stream) => {
                                         let mut full_text = String::new();
                                         while let Some(res) = futures_util::StreamExt::next(&mut transcription_stream).await {

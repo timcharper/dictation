@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::pin::Pin;
 use async_trait::async_trait;
-use crate::traits::{Transcriber, TranscriptionResult};
+use crate::traits::{AudioFormat, Transcriber, TranscriptionResult};
 
 #[derive(Debug, Deserialize)]
 struct InternalTranscriptionResponse {
@@ -19,7 +19,7 @@ impl InternalTranscriptionResponse {
             '\r' | '\n' | '\x0B' | '\x0C' | '\u{0085}' | '\u{2028}' | '\u{2029}' => ' ',
             _ => c,
         }).collect::<String>();
-        
+
         self.text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     }
 }
@@ -38,18 +38,46 @@ impl WhisperClient {
             prompt: None,
         }
     }
+
+    fn build_wav(format: AudioFormat, raw_samples: &[u8]) -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: format.channels,
+            sample_rate: format.sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = hound::WavWriter::new(&mut cursor, spec)
+                .expect("Failed to create WAV writer");
+            let samples: &[f32] = bytemuck::cast_slice(raw_samples);
+            for &sample in samples {
+                writer.write_sample(sample).expect("Failed to write sample");
+            }
+            writer.finalize().expect("Failed to finalize WAV");
+        }
+        cursor.into_inner()
+    }
 }
 
 #[async_trait]
 impl Transcriber for WhisperClient {
     async fn stream_transcription(
         &self,
+        format: AudioFormat,
         audio_stream: Pin<Box<dyn Stream<Item = Bytes> + Send>>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<TranscriptionResult, String>> + Send>>, String> {
         let mut audio_stream = audio_stream;
-        let mut full_body = Vec::new();
+        let mut raw_samples = Vec::new();
         while let Some(chunk) = audio_stream.next().await {
-            full_body.extend_from_slice(&chunk);
+            raw_samples.extend_from_slice(&chunk);
+        }
+
+        let wav_bytes = Self::build_wav(format, &raw_samples);
+
+        // Save last recording to RAM for debugging (e.g. aplay /dev/shm/dictation_last.wav)
+        if let Err(e) = std::fs::write("/dev/shm/dictation_last.wav", &wav_bytes) {
+            eprintln!("[debug] Failed to save debug WAV: {e}");
         }
 
         let mut target_url = self.url.clone();
@@ -69,7 +97,7 @@ impl Transcriber for WhisperClient {
             .post(&target_url)
             .query(&query_params)
             .header("Content-Type", "audio/wav")
-            .body(full_body)
+            .body(wav_bytes)
             .send()
             .await
             .map_err(|e| e.to_string())?;
