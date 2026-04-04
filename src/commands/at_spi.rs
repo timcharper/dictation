@@ -2,7 +2,6 @@ use atspi::AccessibilityConnection;
 use atspi::connection::common::events::{object::StateChangedEvent, Event};
 use atspi::proxy::accessible::ObjectRefExt;
 use atspi::proxy::proxy_ext::ProxyExt;
-use atspi_common::State;
 use futures_lite::StreamExt;
 
 pub async fn snapshot() {
@@ -63,46 +62,67 @@ pub async fn watcher() {
 
     println!("Watching AT-SPI focus events. Move focus to see cursor context...\n");
 
-    let mut event_stream = connection.event_stream();
-    while let Some(result) = event_stream.next().await {
-        let ev = match result {
-            Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) => ev,
-            _ => continue,
-        };
-
-        if ev.state != State::Focused || !ev.enabled {
-            continue;
-        }
-
-        let node = match ev.item.as_accessible_proxy(connection.connection()).await {
-            Ok(n) => n,
-            Err(e) => { eprintln!("[focus] Failed to get proxy: {e}"); continue; }
-        };
-
-        let name = node.name().await.unwrap_or_default();
-        let role = node.get_role().await.map(|r| format!("{r:?}")).unwrap_or_default();
-
-        let proxies = match node.proxies().await {
-            Ok(p) => p,
-            Err(_) => {
-                println!("Focus → {role} \"{name}\" (no text interface)");
-                continue;
-            }
-        };
-
-        match proxies.text().await {
-            Ok(text_proxy) => {
-                let offset = text_proxy.caret_offset().await.unwrap_or(-1);
-                if offset >= 0 {
-                    let start = (offset - 100).max(0);
-                    let text_before = text_proxy.get_text(start, offset).await.unwrap_or_default();
-                    println!("Focus → {role} \"{name}\"  offset={offset}  context={text_before:?}");
-                } else {
-                    println!("Focus → {role} \"{name}\"  (no caret)");
+    // Spawn a dedicated drain task that does nothing but filter and forward.
+    // This keeps the zbus broadcast channel fully drained regardless of how
+    // fast the processing loop runs.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<atspi_common::ObjectRefOwned>();
+    let drain_conn = connection.clone();
+    tokio::spawn(async move {
+        let mut stream = drain_conn.event_stream();
+        while let Some(result) = stream.next().await {
+            if let Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) = result {
+                if ev.state == atspi_common::State::Focused && ev.enabled {
+                    let _ = tx.send(ev.item);
                 }
             }
-            Err(_) => {
-                println!("Focus → {role} \"{name}\" (no text interface)");
+        }
+        eprintln!("[watcher] event stream ended");
+    });
+
+    let mut current: Option<atspi_common::ObjectRefOwned> = None;
+    let mut poll = tokio::time::interval(std::time::Duration::from_millis(500));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            item = rx.recv() => {
+                match item {
+                    Some(item) => {
+                        // Print focus change immediately
+                        let node = match item.as_accessible_proxy(connection.connection()).await {
+                            Ok(n) => n,
+                            Err(e) => { eprintln!("[focus] proxy error: {e}"); continue; }
+                        };
+                        let name = node.name().await.unwrap_or_default();
+                        let role = node.get_role().await.map(|r| format!("{r:?}")).unwrap_or_default();
+                        println!("Focus → {role} \"{name}\"");
+                        current = Some(item);
+                    }
+                    None => break,
+                }
+            }
+            _ = poll.tick() => {
+                let Some(ref item) = current else { continue };
+
+                let node = match item.as_accessible_proxy(connection.connection()).await {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+                let proxies = match node.proxies().await {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                match proxies.text().await {
+                    Ok(text_proxy) => {
+                        let offset = text_proxy.caret_offset().await.unwrap_or(-1);
+                        if offset >= 0 {
+                            let start = (offset - 100).max(0);
+                            let text_before = text_proxy.get_text(start, offset).await.unwrap_or_default();
+                            println!("  poll  offset={offset}  context={text_before:?}");
+                        }
+                    }
+                    Err(_) => {}
+                }
             }
         }
     }

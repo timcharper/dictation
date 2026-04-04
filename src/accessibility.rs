@@ -30,8 +30,8 @@ impl AccessibilityManager {
         let mut event_stream = connection.event_stream();
 
         tokio::spawn(async move {
-            while let Some(Ok(ev)) = event_stream.next().await {
-                if let Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) = Ok::<_, ()>(ev) {
+            while let Some(result) = event_stream.next().await {
+                if let Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) = result {
                     if ev.state == State::Focused && ev.enabled {
                         if let Ok(mut lock) = focused_clone.lock() {
                             *lock = Some(ev.item);
@@ -39,6 +39,7 @@ impl AccessibilityManager {
                     }
                 }
             }
+            eprintln!("[AT-SPI] focus event stream ended");
         });
 
         Ok(Self { connection, focused })
