@@ -1,13 +1,10 @@
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use libadwaita::{Application, ApplicationWindow, PreferencesGroup, ActionRow, PreferencesPage, EntryRow, HeaderBar, ToolbarView};
-use gtk4::{Box as GtkBox, Orientation, Button, glib};
+use gtk4::{Box as GtkBox, Orientation, Button, FileDialog, glib, gio};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use crate::config::{Config, BackendConfig, LlmConfig};
-use crate::recorder;
-use crate::transcriber_whisper::WhisperClient;
-use crate::traits::Transcriber;
 use crate::ui::shortcut_recorder;
 
 pub fn build_ui(app: &Application, runtime: Arc<Runtime>) {
@@ -261,6 +258,26 @@ pub fn build_ui(app: &Application, runtime: Arc<Runtime>) {
         cfg.sound.start_sound = if text.is_empty() { None } else { Some(text) };
         cfg.save();
     });
+    let start_browse = Button::builder()
+        .icon_name("document-open-symbolic")
+        .valign(gtk4::Align::Center)
+        .has_frame(false)
+        .tooltip_text("Browse…")
+        .build();
+    let start_sound_row_clone = start_sound_row.clone();
+    let window_clone = window.clone();
+    start_browse.connect_clicked(move |_| {
+        let row = start_sound_row_clone.clone();
+        let dialog = FileDialog::builder().title("Select Start Sound").build();
+        dialog.open(Some(&window_clone), gio::Cancellable::NONE, move |result| {
+            if let Ok(file) = result {
+                if let Some(path) = file.path() {
+                    row.set_text(&path.to_string_lossy());
+                }
+            }
+        });
+    });
+    start_sound_row.add_suffix(&start_browse);
 
     let end_sound_row = EntryRow::builder()
         .title("End Sound (Path)")
@@ -273,6 +290,26 @@ pub fn build_ui(app: &Application, runtime: Arc<Runtime>) {
         cfg.sound.end_sound = if text.is_empty() { None } else { Some(text) };
         cfg.save();
     });
+    let end_browse = Button::builder()
+        .icon_name("document-open-symbolic")
+        .valign(gtk4::Align::Center)
+        .has_frame(false)
+        .tooltip_text("Browse…")
+        .build();
+    let end_sound_row_clone = end_sound_row.clone();
+    let window_clone = window.clone();
+    end_browse.connect_clicked(move |_| {
+        let row = end_sound_row_clone.clone();
+        let dialog = FileDialog::builder().title("Select End Sound").build();
+        dialog.open(Some(&window_clone), gio::Cancellable::NONE, move |result| {
+            if let Ok(file) = result {
+                if let Some(path) = file.path() {
+                    row.set_text(&path.to_string_lossy());
+                }
+            }
+        });
+    });
+    end_sound_row.add_suffix(&end_browse);
 
     let ducking_row = EntryRow::builder()
         .title("Ducking Volume (0.0 - 1.0)")
@@ -293,59 +330,12 @@ pub fn build_ui(app: &Application, runtime: Arc<Runtime>) {
 
     page.add(&general_group);
     page.add(&whisper_group);
-    page.add(&llm_group);
+    // TODO: add LLM provider (Ollama) settings UI once the feature is implemented
+    // page.add(&llm_group);
     page.add(&sound_group);
 
     content_vbox.append(&page);
 
-    let start_button = Button::builder()
-        .label("Start Recording (Test Stream)")
-        .css_classes(vec!["suggested-action"])
-        .build();
-
-    let rt_clone = runtime.clone();
-    let config_for_recording = config.clone();
-    start_button.connect_clicked(move |_| {
-        let rt = rt_clone.clone();
-        let config = config_for_recording.clone();
-        rt.spawn(async move {
-            let recorder = recorder::AudioRecorder::new();
-            let recorder::RecorderOutput { stream, audio_stream, config: audio_config } = recorder.start_recording();
-
-            let url = {
-                let cfg = config.lock().unwrap();
-                match &cfg.backend {
-                    BackendConfig::WhisperCpp { url } => url.clone(),
-                }
-            };
-
-            let client = WhisperClient::new(url);
-            let format = crate::traits::AudioFormat {
-                sample_rate: audio_config.sample_rate.0,
-                channels: audio_config.channels as u16,
-            };
-
-            std::mem::forget(stream);
-
-            let mut transcription_stream = match <WhisperClient as Transcriber>::stream_transcription(&client, format, Box::pin(audio_stream)).await {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Failed to start transcription stream: {:?}", e);
-                    return;
-                }
-            };
-
-            while let Some(res) = futures_util::StreamExt::next(&mut transcription_stream).await {
-                match res {
-                    Ok(resp) => println!("Transcription: {} (final: {})", resp.text, resp.is_final),
-                    Err(e) => eprintln!("Transcription error: {:?}", e),
-                }
-            }
-        });
-    });
-
-    content_vbox.append(&start_button);
-    
     toolbar_view.set_content(Some(&content_vbox));
     window.set_content(Some(&toolbar_view));
     window.present();

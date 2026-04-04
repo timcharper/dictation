@@ -179,16 +179,20 @@ pub async fn run() {
         Ok(conn) => {
             Check::ok("D-Bus session bus").print();
 
-            match crate::extension_proxy::ExtensionProxy::new(&conn).await {
-                Ok(_) => Check::ok_detail(
+            let dbus_proxy = zbus::fdo::DBusProxy::new(&conn).await
+                .expect("Failed to create DBus proxy");
+            let ext_name: zbus::names::WellKnownName =
+                "com.timcharper.dictation.Extension".try_into().unwrap();
+            match dbus_proxy.get_name_owner(ext_name.into()).await {
+                Ok(owner) => Check::ok_detail(
                     "Dictation extension",
-                    "com.timcharper.dictation.Extension is running",
+                    format!("com.timcharper.dictation.Extension is running ({owner})"),
                 ).print(),
-                Err(e) => {
+                Err(_) => {
                     any_fail = true;
                     Check::fail(
                         "Dictation extension",
-                        format!("com.timcharper.dictation.Extension not found — is the GNOME extension enabled? ({e})"),
+                        "com.timcharper.dictation.Extension not found — is the GNOME extension enabled?",
                     ).print();
                 }
             }

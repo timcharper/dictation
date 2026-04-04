@@ -68,7 +68,7 @@ export default class DictationExtension extends Extension {
             OBJECT_PATH,
             this._interfaceInfo,
             (connection, sender, objectPath, interfaceName, methodName, parameters, invocation) => {
-                this._handleMethodCall(methodName, parameters, invocation);
+                this._handleMethodCall(sender, methodName, parameters, invocation);
             },
             null, // get_property
             null  // set_property
@@ -138,7 +138,33 @@ export default class DictationExtension extends Extension {
         console.log(`[${this.uuid}] Disabled`);
     }
 
-    private _handleMethodCall(methodName: string, parameters: GLib.Variant, invocation: Gio.DBusMethodInvocation) {
+    private _isDaemonSender(sender: string): boolean {
+        try {
+            const result = Gio.DBus.session.call_sync(
+                'org.freedesktop.DBus',
+                '/org/freedesktop/DBus',
+                'org.freedesktop.DBus',
+                'GetNameOwner',
+                new GLib.Variant('(s)', ['com.timcharper.dictation.Daemon']),
+                new GLib.VariantType('(s)'),
+                Gio.DBusCallFlags.NONE,
+                -1,
+                null
+            );
+            const [daemonUniqueName] = result.deep_unpack() as [string];
+            return daemonUniqueName === sender;
+        } catch {
+            return false;
+        }
+    }
+
+    private _handleMethodCall(sender: string, methodName: string, parameters: GLib.Variant, invocation: Gio.DBusMethodInvocation) {
+        if (!this._isDaemonSender(sender)) {
+            console.warn(`[${this.uuid}] Rejected ${methodName} from unauthorized sender ${sender}`);
+            invocation.return_error_literal(Gio.DBusError, Gio.DBusError.ACCESS_DENIED, 'Only the dictation daemon may call this interface');
+            return;
+        }
+
         try {
             const args = parameters.deep_unpack() as any[];
 
