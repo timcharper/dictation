@@ -19,6 +19,8 @@ pub struct Config {
     pub recording_color: String,
     #[serde(default = "default_transcribing_color")]
     pub transcribing_color: String,
+    #[serde(default = "default_accessibility_blacklist")]
+    pub accessibility_blacklist: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -61,6 +63,13 @@ fn default_ducking_volume() -> f32 {
     0.1
 }
 
+fn default_accessibility_blacklist() -> Vec<String> {
+    vec![
+        "^Slack$".to_string(),
+        "^discord$".to_string(),
+    ]
+}
+
 impl Default for SoundConfig {
     fn default() -> Self {
         Self {
@@ -98,6 +107,7 @@ impl Default for Config {
             typing_delay_ms: default_typing_delay(),
             recording_color: default_recording_color(),
             transcribing_color: default_transcribing_color(),
+            accessibility_blacklist: default_accessibility_blacklist(),
         }
     }
 }

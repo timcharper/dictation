@@ -13,6 +13,8 @@ pub trait Extension {
     async fn type_string(&self, text: &str) -> zbus::Result<()>;
     async fn register_shortcut(&self, shortcut: &str) -> zbus::Result<()>;
     async fn unregister_shortcut(&self) -> zbus::Result<()>;
+    async fn get_focused_window_class(&self) -> zbus::Result<String>;
+    async fn get_focused_window_pid(&self) -> zbus::Result<u32>;
 
     #[zbus(signal)]
     async fn menu_item_selected(&self, id: &str) -> zbus::Result<()>;

@@ -337,10 +337,21 @@ pub async fn run_daemon() {
 
                                 let mut cursor_context = None;
                                 if let Some(mgr) = &accessibility_mgr {
-                                    match mgr.get_cursor_info().await {
-                                        Ok(Some(info)) => cursor_context = Some(info.text_before),
-                                        Ok(None) => {}
-                                        Err(e) => eprintln!("[AT-SPI] get_cursor_info error: {e}"),
+                                    let wm_class = proxy.get_focused_window_class().await.ok().unwrap_or_default();
+                                    let is_blacklisted = !wm_class.is_empty() && config.accessibility_blacklist.iter().any(|pattern| {
+                                        regex::Regex::new(pattern)
+                                            .map(|re| re.is_match(&wm_class))
+                                            .unwrap_or(false)
+                                    });
+
+                                    if is_blacklisted {
+                                        eprintln!("[AT-SPI] Skipping context for blacklisted WM class: {wm_class}");
+                                    } else {
+                                        match mgr.get_cursor_info().await {
+                                            Ok(Some(info)) => cursor_context = Some(info.text_before),
+                                            Ok(None) => {}
+                                            Err(e) => eprintln!("[AT-SPI] get_cursor_info error: {e}"),
+                                        }
                                     }
                                 }
 

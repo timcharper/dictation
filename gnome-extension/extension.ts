@@ -38,6 +38,12 @@ const DictationInterfaceXML = `
       <arg type="s" name="shortcut" direction="in"/>
     </method>
     <method name="UnregisterShortcut"/>
+    <method name="GetFocusedWindowClass">
+      <arg type="s" name="wm_class" direction="out"/>
+    </method>
+    <method name="GetFocusedWindowPid">
+      <arg type="u" name="pid" direction="out"/>
+    </method>
     <signal name="MenuItemSelected">
       <arg type="s" name="id"/>
     </signal>
@@ -159,7 +165,8 @@ export default class DictationExtension extends Extension {
     }
 
     private _handleMethodCall(sender: string, methodName: string, parameters: GLib.Variant, invocation: Gio.DBusMethodInvocation) {
-        if (!this._isDaemonSender(sender)) {
+        const readOnlyMethods = ['GetFocusedWindowClass', 'GetFocusedWindowPid'];
+        if (!readOnlyMethods.includes(methodName) && !this._isDaemonSender(sender)) {
             console.warn(`[${this.uuid}] Rejected ${methodName} from unauthorized sender ${sender}`);
             invocation.return_error_literal(Gio.DBusError, Gio.DBusError.ACCESS_DENIED, 'Only the dictation daemon may call this interface');
             return;
@@ -196,6 +203,18 @@ export default class DictationExtension extends Extension {
                     this._unregisterShortcut();
                     invocation.return_value(null);
                     break;
+                case 'GetFocusedWindowClass': {
+                    const win = global.display.focus_window;
+                    const wmClass = win ? win.get_wm_class() ?? '' : '';
+                    invocation.return_value(GLib.Variant.new('(s)', [wmClass]));
+                    break;
+                }
+                case 'GetFocusedWindowPid': {
+                    const win = global.display.focus_window;
+                    const pid = win ? win.get_pid() : 0;
+                    invocation.return_value(GLib.Variant.new('(u)', [pid]));
+                    break;
+                }
                 default:
                     invocation.return_error_literal(Gio.DBusError, Gio.DBusError.UNKNOWN_METHOD, `Unknown method ${methodName}`);
             }

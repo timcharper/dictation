@@ -168,9 +168,56 @@ cargo run -- at-spi
 ```
 
 ### AT-SPI Watcher
-Watches focus events in real time and prints cursor context as focus changes.
+Watches focus events in real time and prints the focused element's WM class and cursor context as focus changes.
 ```sh
 cargo run -- at-spi-watcher
+```
+
+---
+
+## Application Compatibility (Accessibility Blacklist)
+
+Dictation uses the Linux accessibility API (AT-SPI) to read the text around your cursor and pass it to Whisper as context, which significantly improves transcription accuracy.
+
+However, some applications — notably Electron-based apps like **Slack** and **Discord** — do not broadcast AT-SPI focus or text events. When you switch to one of these apps and then trigger dictation, the AT-SPI cursor position is stale from the last application that *did* report focus. Without a blacklist, Dictation would silently use that stale context, which can mislead Whisper.
+
+The `accessibility_blacklist` config option lets you list WM class name patterns (Go-style regular expressions) for applications that should never have their AT-SPI context used. Dictation ships with sensible defaults:
+
+```toml
+accessibility_blacklist = ["^Slack$", "^discord$"]
+```
+
+### Finding the WM class for an app
+
+Run the AT-SPI watcher, then switch between windows:
+
+```sh
+cargo run -- at-spi-watcher
+```
+
+Each poll line shows the GNOME-reported WM class alongside the current AT-SPI cursor context:
+
+```
+Focus  → EditableText "Message"
+Window → "general - Slack"
+  [wm=Slack]  context="the quick brown fox"
+  [wm=Slack]  context="the quick brown fox"
+```
+
+Notice that after switching to Slack, the context doesn't change — it's stale from the previous app. Slack never fired AT-SPI focus events, so the AT-SPI cursor is frozen at wherever it was before you switched. This is the problem: Dictation would silently pass that stale context to Whisper.
+
+Compare that with an app that does support AT-SPI:
+
+```
+Focus  → Text "document.txt"
+  [wm=gedit]  context="the quick brown fox"
+  [wm=gedit]  context="the quick brown fox jumps"
+```
+
+The context updates as you type or move the cursor. Apps where the context never updates after switching to them are good candidates for the blacklist. Add their WM class pattern to `~/.config/dictation/dictation.toml`:
+
+```toml
+accessibility_blacklist = ["^Slack$", "^discord$", "^MyElectronApp$"]
 ```
 
 ### GNOME Extension Integration

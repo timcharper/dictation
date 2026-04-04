@@ -1,5 +1,5 @@
 use atspi::AccessibilityConnection;
-use atspi::connection::common::events::{object::StateChangedEvent, Event};
+use atspi::connection::common::events::{object::StateChangedEvent, window::ActivateEvent, Event, WindowEvents};
 use atspi::proxy::accessible::ObjectRefExt;
 use atspi::proxy::proxy_ext::ProxyExt;
 use futures_lite::StreamExt;
@@ -56,24 +56,45 @@ pub async fn watcher() {
     };
 
     if let Err(e) = connection.register_event::<StateChangedEvent>().await {
-        eprintln!("Failed to register for StateChanged events: {e}");
-        return;
+        eprintln!("Failed to register for StateChanged events: {e}"); return;
+    }
+    if let Err(e) = connection.register_event::<ActivateEvent>().await {
+        eprintln!("Failed to register for Window Activate events: {e}"); return;
     }
 
-    println!("Watching AT-SPI focus events. Move focus to see cursor context...\n");
+    let session_conn = match zbus::Connection::session().await {
+        Ok(c) => c,
+        Err(e) => { eprintln!("Failed to connect to session bus: {e}"); return; }
+    };
+    let extension_proxy = crate::extension_proxy::ExtensionProxy::new(&session_conn).await.ok();
+    if extension_proxy.is_none() {
+        eprintln!("Warning: extension not available — wm_class will show as ?");
+    }
 
-    // Spawn a dedicated drain task that does nothing but filter and forward.
-    // This keeps the zbus broadcast channel fully drained regardless of how
-    // fast the processing loop runs.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<atspi_common::ObjectRefOwned>();
+    println!("Watching AT-SPI focus + window events...");
+    println!("Use wm_class values to configure accessibility_blacklist in dictation.toml\n");
+
+    enum DrainMsg {
+        Focus(atspi_common::ObjectRefOwned),
+        WindowActivate(String),
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DrainMsg>();
     let drain_conn = connection.clone();
     tokio::spawn(async move {
         let mut stream = drain_conn.event_stream();
         while let Some(result) = stream.next().await {
-            if let Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) = result {
-                if ev.state == atspi_common::State::Focused && ev.enabled {
-                    let _ = tx.send(ev.item);
+            match result {
+                Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) => {
+                    if ev.state == atspi_common::State::Focused && ev.enabled {
+                        let _ = tx.send(DrainMsg::Focus(ev.item));
+                    }
                 }
+                Ok(Event::Window(WindowEvents::Activate(ev))) => {
+                    let name = ev.item.name().map(|n| n.to_string()).unwrap_or_default();
+                    let _ = tx.send(DrainMsg::WindowActivate(name));
+                }
+                _ => {}
             }
         }
         eprintln!("[watcher] event stream ended");
@@ -87,16 +108,18 @@ pub async fn watcher() {
         tokio::select! {
             item = rx.recv() => {
                 match item {
-                    Some(item) => {
-                        // Print focus change immediately
+                    Some(DrainMsg::Focus(item)) => {
                         let node = match item.as_accessible_proxy(connection.connection()).await {
                             Ok(n) => n,
                             Err(e) => { eprintln!("[focus] proxy error: {e}"); continue; }
                         };
                         let name = node.name().await.unwrap_or_default();
                         let role = node.get_role().await.map(|r| format!("{r:?}")).unwrap_or_default();
-                        println!("Focus → {role} \"{name}\"");
+                        println!("Focus  → {role} \"{name}\"");
                         current = Some(item);
+                    }
+                    Some(DrainMsg::WindowActivate(name)) => {
+                        println!("Window → \"{name}\"");
                     }
                     None => break,
                 }
@@ -108,21 +131,22 @@ pub async fn watcher() {
                     Ok(n) => n,
                     Err(_) => continue,
                 };
-                let proxies = match node.proxies().await {
-                    Ok(p) => p,
-                    Err(_) => continue,
+
+                let wm_class = match &extension_proxy {
+                    Some(p) => p.get_focused_window_class().await.ok().unwrap_or_else(|| "?".to_string()),
+                    None => "?".to_string(),
                 };
-                match proxies.text().await {
-                    Ok(text_proxy) => {
-                        let offset = text_proxy.caret_offset().await.unwrap_or(-1);
-                        if offset >= 0 {
-                            let start = (offset - 100).max(0);
-                            let text_before = text_proxy.get_text(start, offset).await.unwrap_or_default();
-                            println!("  poll  offset={offset}  context={text_before:?}");
-                        }
-                    }
-                    Err(_) => {}
-                }
+
+                let text_info = async {
+                    let proxies = node.proxies().await.ok()?;
+                    let text_proxy = proxies.text().await.ok()?;
+                    let offset = text_proxy.caret_offset().await.ok().filter(|&o| o >= 0)?;
+                    let start = (offset - 100).max(0);
+                    let text_before = text_proxy.get_text(start, offset).await.unwrap_or_default();
+                    Some(format!("  context={text_before:?}"))
+                }.await.unwrap_or_else(|| "  (no AT-SPI context)".to_string());
+
+                println!("  [wm={wm_class}]{text_info}");
             }
         }
     }

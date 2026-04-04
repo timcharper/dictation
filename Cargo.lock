@@ -640,6 +640,7 @@ dependencies = [
  "libpulse-binding",
  "notify",
  "pulsectl-rs",
+ "regex",
  "reqwest",
  "rodio",
  "rubato",

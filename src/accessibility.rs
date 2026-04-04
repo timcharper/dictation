@@ -3,7 +3,7 @@ use atspi::AccessibilityConnection;
 use atspi::proxy::proxy_ext::ProxyExt;
 use atspi::proxy::accessible::ObjectRefExt;
 use atspi_common::{State, ObjectRefOwned};
-use atspi::connection::common::events::{object::StateChangedEvent, Event};
+use atspi::connection::common::events::{object::StateChangedEvent, window::ActivateEvent, Event, WindowEvents};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use futures_lite::StreamExt;
@@ -24,6 +24,7 @@ impl AccessibilityManager {
         let connection = AccessibilityConnection::new().await?;
 
         connection.register_event::<StateChangedEvent>().await?;
+        connection.register_event::<ActivateEvent>().await?;
 
         let focused: Arc<Mutex<Option<ObjectRefOwned>>> = Arc::new(Mutex::new(None));
         let focused_clone = focused.clone();
@@ -31,15 +32,21 @@ impl AccessibilityManager {
 
         tokio::spawn(async move {
             while let Some(result) = event_stream.next().await {
-                if let Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) = result {
-                    if ev.state == State::Focused && ev.enabled {
-                        if let Ok(mut lock) = focused_clone.lock() {
-                            *lock = Some(ev.item);
+                match result {
+                    Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) => {
+                        if ev.state == State::Focused && ev.enabled {
+                            if let Ok(mut lock) = focused_clone.lock() {
+                                *lock = Some(ev.item);
+                            }
                         }
                     }
+                    Ok(Event::Window(WindowEvents::Activate(_))) => {
+                        // Window switched — corroboration check in daemon.rs handles stale focus
+                    }
+                    _ => {}
                 }
             }
-            eprintln!("[AT-SPI] focus event stream ended");
+            eprintln!("[AT-SPI] event stream ended");
         });
 
         Ok(Self { connection, focused })
