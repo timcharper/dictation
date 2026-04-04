@@ -50,6 +50,9 @@ cargo build --release
 The GNOME Shell extension provides the tray icon, keyboard shortcut handling, and text injection.
 
 ```sh
+# Build the TypeScript source
+cd gnome-extension && npm install && npm run build && cd ..
+
 # Link the extension into GNOME Shell's extension directory
 mkdir -p ~/.local/share/gnome-shell/extensions/
 ln -s "$(pwd)/gnome-extension" ~/.local/share/gnome-shell/extensions/dictation@timcharper.com
