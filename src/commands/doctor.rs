@@ -199,6 +199,42 @@ pub async fn run() {
         }
     }
 
+    // ── Accessibility (AT-SPI) ───────────────────────────────────────────────
+
+    println!("\n\x1b[1mAccessibility (AT-SPI)\x1b[0m");
+
+    match zbus::Connection::session().await {
+        Err(_) => {} // already reported above
+        Ok(conn) => {
+            let result = async {
+                let props = zbus::fdo::PropertiesProxy::builder(&conn)
+                    .destination("org.a11y.Bus")?
+                    .path("/org/a11y/bus")?
+                    .build()
+                    .await?;
+                let iface = zbus::names::InterfaceName::try_from("org.a11y.Status")?;
+                let value = props.get(iface, "IsEnabled").await?;
+                let enabled: bool = bool::try_from(value)?;
+                Ok::<bool, Box<dyn std::error::Error + Send + Sync>>(enabled)
+            }.await;
+
+            match result {
+                Ok(true) => Check::ok("Accessibility framework enabled").print(),
+                Ok(false) => {
+                    Check::warn(
+                        "Accessibility framework disabled",
+                        "many apps won't broadcast AT-SPI events — context will be unavailable\n\
+                         \x1b[2m       Enable with:  gsettings set org.gnome.desktop.interface toolkit-accessibility true\n\
+                         \x1b[2m       Note: apps already running (e.g. Firefox) must be restarted to pick up the change.\x1b[0m",
+                    ).print();
+                }
+                Err(e) => {
+                    Check::warn("Accessibility framework", format!("could not query status: {e}")).print();
+                }
+            }
+        }
+    }
+
     // ── Summary ──────────────────────────────────────────────────────────────
 
     println!();
