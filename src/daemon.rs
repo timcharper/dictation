@@ -135,6 +135,8 @@ pub async fn run_daemon() {
         println!("Daemon ready. Listening for shortcuts...");
 
         let mut recording_state: Option<RecordingState> = None;
+        let mut wm_at_last_focus: Option<String> = None;
+        let mut focus_rx = accessibility_mgr.as_ref().map(|m| m.focus_receiver.clone());
 
         let config_path = Config::path();
         let (config_tx, mut config_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -155,6 +157,15 @@ pub async fn run_daemon() {
 
         loop {
             tokio::select! {
+                _ = async {
+                    if let Some(rx) = &mut focus_rx {
+                        rx.changed().await.ok();
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    wm_at_last_focus = proxy.get_focused_window_class().await.ok();
+                }
                 sleep_signal = async {
                     if let Some(s) = &mut sleep_stream {
                         tokio_stream::StreamExt::next(s).await
@@ -337,16 +348,26 @@ pub async fn run_daemon() {
 
                                 let mut cursor_context = None;
                                 if let Some(mgr) = &accessibility_mgr {
-                                    let wm_class = proxy.get_focused_window_class().await.ok().unwrap_or_default();
-                                    let is_blacklisted = !wm_class.is_empty() && config.accessibility_blacklist.iter().any(|pattern| {
+                                    let current_wm = proxy.get_focused_window_class().await.ok().unwrap_or_default();
+
+                                    let is_stale = match &wm_at_last_focus {
+                                        Some(at_focus_wm) if at_focus_wm != &current_wm => {
+                                            eprintln!("[AT-SPI] Skipping stale context: focused window is '{current_wm}' but last AT-SPI focus was for '{at_focus_wm}'");
+                                            true
+                                        }
+                                        _ => false,
+                                    };
+
+                                    let is_blacklisted = !is_stale && !current_wm.is_empty() && config.accessibility_blacklist.iter().any(|pattern| {
                                         regex::Regex::new(pattern)
-                                            .map(|re| re.is_match(&wm_class))
+                                            .map(|re| re.is_match(&current_wm))
                                             .unwrap_or(false)
                                     });
-
                                     if is_blacklisted {
-                                        eprintln!("[AT-SPI] Skipping context for blacklisted WM class: {wm_class}");
-                                    } else {
+                                        eprintln!("[AT-SPI] Skipping context for blacklisted WM class: {current_wm}");
+                                    }
+
+                                    if !is_stale && !is_blacklisted {
                                         match mgr.get_cursor_info().await {
                                             Ok(Some(info)) => cursor_context = Some(info.text_before),
                                             Ok(None) => {}

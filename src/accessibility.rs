@@ -7,6 +7,7 @@ use atspi::connection::common::events::{object::StateChangedEvent, window::Activ
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use futures_lite::StreamExt;
+use tokio::sync::watch;
 
 #[derive(Debug)]
 pub struct CursorInfo {
@@ -17,6 +18,7 @@ pub struct CursorInfo {
 pub struct AccessibilityManager {
     connection: AccessibilityConnection,
     focused: Arc<Mutex<Option<ObjectRefOwned>>>,
+    pub focus_receiver: watch::Receiver<()>,
 }
 
 impl AccessibilityManager {
@@ -29,6 +31,7 @@ impl AccessibilityManager {
         let focused: Arc<Mutex<Option<ObjectRefOwned>>> = Arc::new(Mutex::new(None));
         let focused_clone = focused.clone();
         let mut event_stream = connection.event_stream();
+        let (focus_tx, focus_receiver) = watch::channel(());
 
         tokio::spawn(async move {
             while let Some(result) = event_stream.next().await {
@@ -38,10 +41,11 @@ impl AccessibilityManager {
                             if let Ok(mut lock) = focused_clone.lock() {
                                 *lock = Some(ev.item);
                             }
+                            let _ = focus_tx.send(());
                         }
                     }
                     Ok(Event::Window(WindowEvents::Activate(_))) => {
-                        // Window switched — corroboration check in daemon.rs handles stale focus
+                        // Window switched — stale detection in daemon.rs handles this
                     }
                     _ => {}
                 }
@@ -49,7 +53,7 @@ impl AccessibilityManager {
             eprintln!("[AT-SPI] event stream ended");
         });
 
-        Ok(Self { connection, focused })
+        Ok(Self { connection, focused, focus_receiver })
     }
 
     /// Returns information about the text cursor in the currently focused element.
