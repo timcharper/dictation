@@ -70,6 +70,8 @@ enum Commands {
         #[command(subcommand)]
         subcommand: MprisCommands,
     },
+    /// Trigger dictation start/stop in the running daemon
+    Trigger,
     /// Check system health: microphone, Whisper backend, GNOME extension
     Doctor,
     /// Run as a daemon, listening for extension shortcuts
@@ -119,6 +121,11 @@ fn main() -> glib::ExitCode {
         Some(Commands::Mpris { subcommand }) => {
             let rt = Runtime::new().expect("Failed to create Tokio runtime");
             rt.block_on(commands::mpris::run(subcommand));
+            glib::ExitCode::SUCCESS
+        }
+        Some(Commands::Trigger) => {
+            let rt = Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(commands::trigger::run());
             glib::ExitCode::SUCCESS
         }
         Some(Commands::Doctor) => {

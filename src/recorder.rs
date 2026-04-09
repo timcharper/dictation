@@ -38,7 +38,9 @@ impl AudioRecorder {
                     &stream_config,
                     move |data: &[f32], _| {
                         let bytes = Bytes::copy_from_slice(bytemuck::cast_slice(data));
-                        let _ = tx.blocking_send(bytes);
+                        if let Err(e) = tx.try_send(bytes) {
+                            eprintln!("Warning: Audio channel full, dropping samples: {:?}", e);
+                        }
                     },
                     |err| eprintln!("Stream error: {:?}", err),
                     None,

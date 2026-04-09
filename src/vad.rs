@@ -37,6 +37,9 @@ impl VadProcessor {
     }
 
     pub fn process_samples(&mut self, samples: &[f32]) -> bool {
+        let mut voice_detected = false;
+
+        // 1. Mix to mono if necessary (reuse a buffer if we wanted to be even faster, but this is okay)
         let mono_samples: Vec<f32> = if self.input_channels > 1 {
             samples.chunks_exact(self.input_channels as usize)
                 .map(|chunk| chunk.iter().sum::<f32>() / self.input_channels as f32)
@@ -45,31 +48,33 @@ impl VadProcessor {
             samples.to_vec()
         };
 
-        let mut voice_detected = false;
-
-        let final_samples = if let Some(resampler) = &mut self.resampler {
+        // 2. Resample if necessary
+        if let Some(resampler) = &mut self.resampler {
             self.resample_buffer.extend(mono_samples);
             let needed = resampler.input_frames_next();
-            let mut out = Vec::new();
             
             while self.resample_buffer.len() >= needed {
-                let chunk: Vec<f32> = self.resample_buffer.drain(0..needed).collect();
+                let chunk = &self.resample_buffer[0..needed];
                 let resampled = resampler.process(&[chunk], None).expect("Resampling failed");
-                out.extend(resampled[0].iter().copied());
+                self.vad_buffer.extend(&resampled[0]);
+                
+                // Remove processed samples
+                self.resample_buffer.drain(0..needed);
+                // Update needed for next iteration
+                // (some resamplers might have variable needed, though FastFixedIn usually doesn't)
+                // but we should check it.
             }
-            out
         } else {
-            mono_samples
+            self.vad_buffer.extend(mono_samples);
         };
 
-        self.vad_buffer.extend(final_samples);
-        
+        // 3. Buffer for VAD (requires exactly 256 samples)
         while self.vad_buffer.len() >= 256 {
-            let frame: Vec<f32> = self.vad_buffer.drain(0..256).collect();
-            // earshot predict_f32 returns a score (float)
-            if self.detector.predict_f32(&frame) > 0.5 {
+            let frame = &self.vad_buffer[0..256];
+            if self.detector.predict_f32(frame) > 0.5 {
                 voice_detected = true;
             }
+            self.vad_buffer.drain(0..256);
         }
 
         voice_detected

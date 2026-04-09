@@ -5,3 +5,4 @@ pub mod extension;
 pub mod microphone;
 pub mod mpris;
 pub mod transcribe;
+pub mod trigger;
