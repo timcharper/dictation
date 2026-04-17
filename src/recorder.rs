@@ -2,7 +2,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use bytes::Bytes;
 
 pub struct AudioRecorder {
     host: cpal::Host,
@@ -10,7 +9,7 @@ pub struct AudioRecorder {
 
 pub struct RecorderOutput {
     pub stream: Stream,
-    pub audio_stream: ReceiverStream<Bytes>,
+    pub audio_stream: ReceiverStream<Vec<f32>>,
     pub config: StreamConfig,
 }
 
@@ -29,7 +28,7 @@ impl AudioRecorder {
             .expect("Failed to get default input config");
         
         let stream_config: StreamConfig = config.clone().into();
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel::<Vec<f32>>(100);
 
         // Capture samples in a separate thread/stream
         let stream = match config.sample_format() {
@@ -37,8 +36,7 @@ impl AudioRecorder {
                 device.build_input_stream(
                     &stream_config,
                     move |data: &[f32], _| {
-                        let bytes = Bytes::copy_from_slice(bytemuck::cast_slice(data));
-                        if let Err(e) = tx.try_send(bytes) {
+                        if let Err(e) = tx.try_send(data.to_vec()) {
                             eprintln!("Warning: Audio channel full, dropping samples: {:?}", e);
                         }
                     },

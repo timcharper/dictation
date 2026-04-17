@@ -19,6 +19,7 @@ pub trait MediaPlayer2Player {
     fn metadata(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
 }
 
+#[derive(Clone)]
 pub struct MprisClient {
     conn: Connection,
 }

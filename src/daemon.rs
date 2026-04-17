@@ -12,6 +12,70 @@ use crate::transcriber_factory::create_transcriber;
 use crate::vad::VadProcessor;
 use crate::accessibility::AccessibilityManager;
 
+/// Ensures audio volume and MPRIS state are restored when recording ends or the daemon encounters an error.
+struct RecordingGuard {
+    original_volume: Option<f64>,
+    paused_players: Vec<mpris::PlayerState>,
+    mpris_client: mpris::MprisClient,
+    conn: Connection,
+    sound_config: crate::config::SoundConfig,
+}
+
+impl RecordingGuard {
+    fn new(
+        original_volume: Option<f64>,
+        paused_players: Vec<mpris::PlayerState>,
+        mpris_client: &mpris::MprisClient,
+        conn: &Connection,
+        sound_config: &crate::config::SoundConfig,
+    ) -> Self {
+        Self {
+            original_volume,
+            paused_players,
+            mpris_client: mpris_client.clone(),
+            conn: conn.clone(),
+            sound_config: sound_config.clone(),
+        }
+    }
+}
+
+impl Drop for RecordingGuard {
+    fn drop(&mut self) {
+        let original_volume = self.original_volume;
+        let paused_players = std::mem::take(&mut self.paused_players);
+        let audio_mgr = audio::AudioManager::new();
+        let mpris_client = self.mpris_client.clone();
+        let conn = self.conn.clone();
+        let sound_config = self.sound_config.clone();
+
+        tokio::spawn(async move {
+            println!("[DEBUG] RecordingGuard restoring state...");
+            if let Ok(proxy) = ExtensionProxy::new(&conn).await {
+                // Restore volume and play end sound
+                audio_mgr.restore_and_play_end(&proxy, &sound_config, original_volume).await;
+            }
+
+            // Resume MPRIS players
+            for p_state in paused_players {
+                if let Ok(player_proxy) = mpris_client.get_proxy(&p_state.service).await {
+                    if let Ok(status) = player_proxy.playback_status().await {
+                        let status: String = status;
+                        if status == "Paused" {
+                            if let Ok(metadata) = player_proxy.metadata().await {
+                                let current_track_id = mpris::extract_track_id(&metadata);
+                                if current_track_id == p_state.track_id {
+                                    println!("Resuming player: {}", p_state.service);
+                                    let _ = player_proxy.play().await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
 #[zbus::proxy(
     interface = "org.freedesktop.login1.Manager",
     default_service = "org.freedesktop.login1",
@@ -292,15 +356,21 @@ pub async fn run_daemon() {
                         }
                     } => {
                         if let Some(_) = _trigger {
-                            if let Some(state) = recording_state.take() {
+                            if let Some(mut state) = recording_state.take() {
                                 println!("Trigger received! Stopping recording and transcribing...");
                                 let stop_time = std::time::Instant::now();
 
                                 // Signal transcribing state
                                 let _ = proxy.update("emblem-synchronizing-symbolic", get_menu_items(&history_mgr), "transcribing", &state.config.transcribing_color).await;
 
-                                // Restore volume and play end sound immediately
-                                audio_mgr.restore_and_play_end(&proxy, &state.config.sound, state.original_volume).await;
+                                // The guard will handle restoration on drop (at the end of this block)
+                                let _guard = RecordingGuard::new(
+                                    state.original_volume,
+                                    std::mem::take(&mut state.paused_players),
+                                    &mpris_client,
+                                    &conn,
+                                    &state.config.sound,
+                                );
 
                                 let format = crate::traits::AudioFormat {
                                     sample_rate: state.recorder_output.config.sample_rate.0,
@@ -352,22 +422,6 @@ pub async fn run_daemon() {
                                     Err(e) => eprintln!("Failed to start transcription: {:?}", e),
                                 }
 
-                                // Resume MPRIS
-                                for p_state in state.paused_players {
-                                    if let Ok(player_proxy) = mpris_client.get_proxy(&p_state.service).await {
-                                        if let Ok(status) = player_proxy.playback_status().await {
-                                            if status == "Paused" {
-                                                if let Ok(metadata) = player_proxy.metadata().await {
-                                                    let current_track_id = mpris::extract_track_id(&metadata);
-                                                    if current_track_id == p_state.track_id {
-                                                        println!("Resuming player: {}", p_state.service);
-                                                        let _ = player_proxy.play().await;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
                                 println!("Dictation cycle complete.");
                                 let _ = proxy.update("audio-input-microphone-symbolic", get_menu_items(&history_mgr), "idle", "").await;
                             } else {
@@ -481,7 +535,7 @@ pub async fn run_daemon() {
                         config = new_config;
                     }
                     // Pull audio samples if recording
-                    Some(bytes) = async {
+                    Some(samples_chunk) = async {
                         if let Some(state) = &mut recording_state {
                             state.recorder_output.audio_stream.next().await
                         } else {
@@ -489,10 +543,9 @@ pub async fn run_daemon() {
                         }
                     } => {
                         if let Some(state) = &mut recording_state {
-                            let chunk: &[f32] = bytemuck::cast_slice(&bytes);
-                            state.samples.extend_from_slice(chunk);
+                            state.samples.extend_from_slice(&samples_chunk);
 
-                            let speaking = state.vad_processor.process_samples(chunk);
+                            let speaking = state.vad_processor.process_samples(&samples_chunk);
                             if speaking != state.is_speaking {
                                 state.is_speaking = speaking;
                                 let icon = if speaking {
