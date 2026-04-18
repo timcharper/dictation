@@ -1,4 +1,4 @@
-use directories::BaseDirs;
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -111,9 +111,9 @@ impl Default for Config {
 
 impl Config {
     pub fn path() -> PathBuf {
-        let base_dirs = BaseDirs::new().expect("Could not determine home directory");
-        let mut path = base_dirs.config_dir().to_path_buf();
-        path.push("dictation");
+        let proj_dirs = ProjectDirs::from("com", "timcharper", "dictation")
+            .expect("Could not find project directories");
+        let mut path = proj_dirs.config_dir().to_path_buf();
         path.push("dictation.toml");
         path
     }

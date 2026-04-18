@@ -32,7 +32,7 @@ impl HistoryManager {
     }
 
     fn get_history_path() -> PathBuf {
-        let proj_dirs = ProjectDirs::from("org", "gnome", "dictation")
+        let proj_dirs = ProjectDirs::from("com", "timcharper", "dictation")
             .expect("Could not find project directories");
         let cache_dir = proj_dirs.cache_dir();
         fs::create_dir_all(cache_dir).ok();

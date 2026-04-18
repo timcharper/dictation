@@ -3,8 +3,9 @@
   "description": "Integration with the Dictation application, providing a custom tray icon, shortcut keys, and focus management.",
   "uuid": "dictation@timcharper.com",
   "shell-version": [
-    "49"
+    "49",
+    "50"
   ],
-  "settings-schema": "org.gnome.shell.extensions.dictation",
+  "settings-schema": "com.timcharper.dictation",
   "url": "https://dictation.timcharper.com"
 }

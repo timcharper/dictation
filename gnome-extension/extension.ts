@@ -276,7 +276,7 @@ export default class DictationExtension extends Extension {
 
         this._currentShortcut = shortcut;
 
-        let settings = this.getSettings('org.gnome.shell.extensions.dictation');
+        let settings = this.getSettings('com.timcharper.dictation');
         settings.set_strv('dictation-shortcut', [shortcut]);
 
         Main.wm.addKeybinding('dictation-shortcut',
