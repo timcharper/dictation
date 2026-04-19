@@ -196,6 +196,42 @@ pub async fn run() {
                     ).print();
                 }
             }
+
+            // GSettings Schema check
+            let output = tokio::process::Command::new("gsettings")
+                .args(["list-relocatable-schemas"])
+                .output()
+                .await;
+            
+            let schema_id = "com.timcharper.dictation";
+            let schema_found = if let Ok(out) = output {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                stdout.lines().any(|l| l.trim() == schema_id)
+            } else { false };
+
+            if schema_found {
+                Check::ok_detail("GSettings schema", schema_id).print();
+            } else {
+                // Also check non-relocatable just in case
+                let output2 = tokio::process::Command::new("gsettings")
+                    .args(["list-schemas"])
+                    .output()
+                    .await;
+                let schema_found2 = if let Ok(out) = output2 {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    stdout.lines().any(|l| l.trim() == schema_id)
+                } else { false };
+
+                if schema_found2 {
+                    Check::ok_detail("GSettings schema", schema_id).print();
+                } else {
+                    any_fail = true;
+                    Check::fail(
+                        "GSettings schema",
+                        format!("{schema_id} NOT FOUND. Run 'glib-compile-schemas' on the extension's schemas directory."),
+                    ).print();
+                }
+            }
         }
     }
 
