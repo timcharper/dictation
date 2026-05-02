@@ -104,54 +104,7 @@ impl Transcriber for WhisperClient {
             .map_err(|e| e.to_string())?;
 
         let bytes_stream = response.bytes_stream();
-        let buffer = Vec::new();
-
-        let stream = futures_util::stream::unfold(
-            (bytes_stream, buffer),
-            |(mut bytes_stream, mut buffer)| async move {
-                loop {
-                    if !buffer.is_empty() {
-                        let mut de = serde_json::Deserializer::from_slice(&buffer).into_iter::<InternalTranscriptionResponse>();
-                        if let Some(res) = de.next() {
-                            match res {
-                                Ok(mut resp) => {
-                                    let consumed = de.byte_offset();
-                                    buffer.drain(..consumed);
-                                    resp.sanitize();
-                                    let result = Ok(TranscriptionResult {
-                                        text: resp.text,
-                                        is_final: resp.is_final,
-                                    });
-                                    return Some((result, (bytes_stream, buffer)));
-                                }
-                                Err(e) if e.is_eof() => {
-                                    // Need more data
-                                }
-                                Err(e) => {
-                                    let body_snippet = String::from_utf8_lossy(&buffer);
-                                    let body_snippet = if body_snippet.len() > 100 {
-                                        format!("{}...", &body_snippet[..100])
-                                    } else {
-                                        body_snippet.to_string()
-                                    };
-                                    let result = Err(format!("JSON parse error: {} (body: {})", e, body_snippet));
-                                    buffer.clear();
-                                    return Some((result, (bytes_stream, buffer)));
-                                }
-                            }
-                        }
-                    }
-
-                    match bytes_stream.next().await {
-                        Some(Ok(b)) => buffer.extend_from_slice(&b),
-                        Some(Err(e)) => return Some((Err(e.to_string()), (bytes_stream, buffer))),
-                        None => return None,
-                    }
-                }
-            },
-        );
-
-        Ok(Box::pin(stream))
+        Ok(parse_whisper_stream(bytes_stream))
     }
 
     fn set_prompt(&mut self, prompt: String) {
@@ -179,5 +132,113 @@ impl Transcriber for WhisperClient {
                 self.prompt = Some(truncated);
             }
         }
+    }
+}
+
+fn parse_whisper_stream<S, E>(
+    bytes_stream: S,
+) -> Pin<Box<dyn Stream<Item = Result<TranscriptionResult, String>> + Send>>
+where
+    S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+    E: std::fmt::Display + 'static,
+{
+    let buffer = Vec::new();
+
+    let stream = futures_util::stream::unfold(
+        (bytes_stream, buffer),
+        |(mut bytes_stream, mut buffer)| async move {
+            loop {
+                if !buffer.is_empty() {
+                    let mut de = serde_json::Deserializer::from_slice(&buffer).into_iter::<InternalTranscriptionResponse>();
+                    if let Some(res) = de.next() {
+                        match res {
+                            Ok(mut resp) => {
+                                let consumed = de.byte_offset();
+                                buffer.drain(..consumed);
+                                resp.sanitize();
+                                let result = Ok(TranscriptionResult {
+                                    text: resp.text,
+                                    is_final: resp.is_final,
+                                });
+                                return Some((result, (bytes_stream, buffer)));
+                            }
+                            Err(e) if e.is_eof() => {
+                                // Need more data
+                            }
+                            Err(e) => {
+                                let body_snippet = String::from_utf8_lossy(&buffer);
+                                let body_snippet = if body_snippet.len() > 100 {
+                                    format!("{}...", &body_snippet[..100])
+                                } else {
+                                    body_snippet.to_string()
+                                };
+                                let result = Err(format!("JSON parse error: {} (body: {})", e, body_snippet));
+                                buffer.clear();
+                                return Some((result, (bytes_stream, buffer)));
+                            }
+                        }
+                    }
+                }
+
+                match bytes_stream.next().await {
+                    Some(Ok(b)) => buffer.extend_from_slice(&b),
+                    Some(Err(e)) => return Some((Err(e.to_string()), (bytes_stream, buffer))),
+                    None => return None,
+                }
+            }
+        },
+    );
+
+    Box::pin(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::stream;
+
+    #[tokio::test]
+    async fn test_parse_whisper_stream_chunked() {
+        let json_part1 = r#"{"text": "Hello "#;
+        let json_part2 = r#"world!", "is_final": true}"#;
+        
+        let chunks: Vec<Result<Bytes, String>> = vec![
+            Ok(Bytes::from(json_part1)),
+            Ok(Bytes::from(json_part2)),
+        ];
+        let bytes_stream = stream::iter(chunks);
+        
+        let mut transcription_stream = parse_whisper_stream(bytes_stream);
+        
+        let res = transcription_stream.next().await.unwrap().unwrap();
+        assert_eq!(res.text, "Hello world!");
+        assert!(res.is_final);
+        assert!(transcription_stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_parse_whisper_stream_multiple_messages() {
+        let msg1 = r#"{"text": "Partial", "is_final": false}"#;
+        let msg2 = r#"{"text": "Final result", "is_final": true}"#;
+        
+        // Split msg1 across chunks, msg2 in one chunk
+        let chunks: Vec<Result<Bytes, String>> = vec![
+            Ok(Bytes::from(&msg1[..10])),
+            Ok(Bytes::from(&msg1[10..])),
+            Ok(Bytes::from(msg2)),
+        ];
+        let bytes_stream = stream::iter(chunks);
+        
+        let mut transcription_stream = parse_whisper_stream(bytes_stream);
+        
+        let res1 = transcription_stream.next().await.unwrap().unwrap();
+        assert_eq!(res1.text, "Partial");
+        assert!(!res1.is_final);
+        
+        let res2 = transcription_stream.next().await.unwrap().unwrap();
+        assert_eq!(res2.text, "Final result");
+        assert!(res2.is_final);
+        
+        assert!(transcription_stream.next().await.is_none());
     }
 }
