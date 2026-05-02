@@ -7,6 +7,7 @@ pub struct VadProcessor {
     input_channels: u16,
     resample_buffer: Vec<f32>,
     vad_buffer: Vec<f32>,
+    transcription_buffer: Vec<f32>,
 }
 
 impl VadProcessor {
@@ -33,13 +34,14 @@ impl VadProcessor {
             input_channels: channels,
             resample_buffer: Vec::new(),
             vad_buffer: Vec::new(),
+            transcription_buffer: Vec::new(),
         }
     }
 
     pub fn process_samples(&mut self, samples: &[f32]) -> bool {
         let mut voice_detected = false;
 
-        // 1. Mix to mono if necessary (reuse a buffer if we wanted to be even faster, but this is okay)
+        // 1. Mix to mono if necessary
         let mono_samples: Vec<f32> = if self.input_channels > 1 {
             samples.chunks_exact(self.input_channels as usize)
                 .map(|chunk| chunk.iter().sum::<f32>() / self.input_channels as f32)
@@ -56,16 +58,15 @@ impl VadProcessor {
             while self.resample_buffer.len() >= needed {
                 let chunk = &self.resample_buffer[0..needed];
                 let resampled = resampler.process(&[chunk], None).expect("Resampling failed");
-                self.vad_buffer.extend(&resampled[0]);
+                let frames = &resampled[0];
+                self.vad_buffer.extend(frames);
+                self.transcription_buffer.extend(frames);
                 
-                // Remove processed samples
                 self.resample_buffer.drain(0..needed);
-                // Update needed for next iteration
-                // (some resamplers might have variable needed, though FastFixedIn usually doesn't)
-                // but we should check it.
             }
         } else {
-            self.vad_buffer.extend(mono_samples);
+            self.vad_buffer.extend(&mono_samples);
+            self.transcription_buffer.extend(mono_samples);
         };
 
         // 3. Buffer for VAD (requires exactly 256 samples)
@@ -78,5 +79,9 @@ impl VadProcessor {
         }
 
         voice_detected
+    }
+
+    pub fn take_transcription_samples(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.transcription_buffer)
     }
 }

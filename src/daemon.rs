@@ -98,7 +98,6 @@ fn no_space_before_chars() -> &'static [char] {
 }
 
 struct RecordingState {
-    samples: Vec<f32>,
     recorder_output: recorder::RecorderOutput,
     original_volume: Option<f64>,
     paused_players: Vec<mpris::PlayerState>,
@@ -372,11 +371,18 @@ pub async fn run_daemon() {
                                     &state.config.sound,
                                 );
 
+                                let samples = state.vad_processor.take_transcription_samples();
+                                if samples.is_empty() {
+                                    println!("No audio captured.");
+                                    let _ = proxy.update("audio-input-microphone-symbolic", get_menu_items(&history_mgr), "idle", "").await;
+                                    continue;
+                                }
+
                                 let format = crate::traits::AudioFormat {
-                                    sample_rate: state.recorder_output.config.sample_rate.0,
-                                    channels: state.recorder_output.config.channels as u16,
+                                    sample_rate: 16000,
+                                    channels: 1,
                                 };
-                                let raw_bytes = bytes::Bytes::from(bytemuck::cast_slice::<f32, u8>(&state.samples).to_vec());
+                                let raw_bytes = bytes::Bytes::from(bytemuck::cast_slice::<f32, u8>(&samples).to_vec());
 
                                 let transcriber = create_transcriber(&state.config.backend, state.cursor_context.clone());
 
@@ -512,7 +518,6 @@ pub async fn run_daemon() {
                                 );
 
                                 recording_state = Some(RecordingState {
-                                    samples: Vec::new(),
                                     recorder_output: output,
                                     original_volume,
                                     paused_players,
@@ -543,8 +548,6 @@ pub async fn run_daemon() {
                         }
                     } => {
                         if let Some(state) = &mut recording_state {
-                            state.samples.extend_from_slice(&samples_chunk);
-
                             let speaking = state.vad_processor.process_samples(&samples_chunk);
                             if speaking != state.is_speaking {
                                 state.is_speaking = speaking;

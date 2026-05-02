@@ -43,8 +43,8 @@ impl WhisperClient {
         let spec = hound::WavSpec {
             channels: format.channels,
             sample_rate: format.sample_rate,
-            bits_per_sample: 32,
-            sample_format: hound::SampleFormat::Float,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
         };
         let mut cursor = std::io::Cursor::new(Vec::new());
         {
@@ -52,7 +52,8 @@ impl WhisperClient {
                 .expect("Failed to create WAV writer");
             let samples: &[f32] = bytemuck::cast_slice(raw_samples);
             for &sample in samples {
-                writer.write_sample(sample).expect("Failed to write sample");
+                let sample_i16 = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                writer.write_sample(sample_i16).expect("Failed to write sample");
             }
             writer.finalize().expect("Failed to finalize WAV");
         }

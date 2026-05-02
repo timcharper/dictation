@@ -14,10 +14,13 @@ pub async fn run(path: PathBuf) {
 
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.expect("read sample")).collect(),
-        hound::SampleFormat::Int => reader.samples::<i32>().map(|s| {
-            let s = s.expect("read sample");
-            s as f32 / i32::MAX as f32
-        }).collect(),
+        hound::SampleFormat::Int => {
+            let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
+            reader.samples::<i32>().map(|s| {
+                let s = s.expect("read sample");
+                s as f32 / max_val
+            }).collect()
+        },
     };
 
     let raw_bytes = Bytes::from(bytemuck::cast_slice::<f32, u8>(&samples).to_vec());

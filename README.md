@@ -57,7 +57,7 @@ cd gnome-extension && npm install && npm run build && cd ..
 mkdir -p ~/.local/share/gnome-shell/extensions/
 ln -s "$(pwd)/gnome-extension" ~/.local/share/gnome-shell/extensions/dictation@timcharper.com
 
-# Compile GSettings schemas
+# Compile GSettings schemas (required for the extension to load)
 glib-compile-schemas gnome-extension/schemas/
 ```
 
@@ -66,6 +66,12 @@ Then restart GNOME Shell (`Alt+F2` → `r` on X11, or log out and back in on Way
 ```sh
 gnome-extensions enable dictation@timcharper.com
 ```
+
+> **Note on Accessibility**: Dictation requires the GNOME Accessibility framework to be enabled to read text context. If `dictation doctor` reports it as disabled, run:
+> ```sh
+> gsettings set org.gnome.desktop.interface toolkit-accessibility true
+> ```
+> (You may need to restart applications like Firefox for them to start broadcasting events).
 
 ### 4. Configuration
 

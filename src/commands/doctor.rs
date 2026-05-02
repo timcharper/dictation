@@ -198,39 +198,57 @@ pub async fn run() {
             }
 
             // GSettings Schema check
-            let output = tokio::process::Command::new("gsettings")
-                .args(["list-relocatable-schemas"])
-                .output()
-                .await;
-            
             let schema_id = "com.timcharper.dictation";
-            let schema_found = if let Ok(out) = output {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                stdout.lines().any(|l| l.trim() == schema_id)
-            } else { false };
+            let mut schema_found = false;
+
+            // 1. Check standard locations
+            for cmd in ["list-schemas", "list-relocatable-schemas"] {
+                let output = tokio::process::Command::new("gsettings")
+                    .arg(cmd)
+                    .output()
+                    .await;
+                if let Ok(out) = output {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    if stdout.lines().any(|l| l.trim() == schema_id) {
+                        schema_found = true;
+                        break;
+                    }
+                }
+            }
+
+            // 2. Check local and installed extension directories
+            if !schema_found {
+                let mut paths = vec![Path::new("gnome-extension/schemas").to_path_buf()];
+                if let Some(home) = std::env::var_os("HOME") {
+                    paths.push(Path::new(&home).join(".local/share/gnome-shell/extensions/dictation@timcharper.com/schemas"));
+                }
+
+                for path in paths {
+                    if path.join("gschemas.compiled").exists() {
+                        let output = tokio::process::Command::new("gsettings")
+                            .env("GSETTINGS_SCHEMA_DIR", &path)
+                            .args(["list-schemas"])
+                            .output()
+                            .await;
+                        if let Ok(out) = output {
+                            let stdout = String::from_utf8_lossy(&out.stdout);
+                            if stdout.lines().any(|l| l.trim() == schema_id) {
+                                schema_found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
 
             if schema_found {
                 Check::ok_detail("GSettings schema", schema_id).print();
             } else {
-                // Also check non-relocatable just in case
-                let output2 = tokio::process::Command::new("gsettings")
-                    .args(["list-schemas"])
-                    .output()
-                    .await;
-                let schema_found2 = if let Ok(out) = output2 {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    stdout.lines().any(|l| l.trim() == schema_id)
-                } else { false };
-
-                if schema_found2 {
-                    Check::ok_detail("GSettings schema", schema_id).print();
-                } else {
-                    any_fail = true;
-                    Check::fail(
-                        "GSettings schema",
-                        format!("{schema_id} NOT FOUND. Run 'glib-compile-schemas' on the extension's schemas directory."),
-                    ).print();
-                }
+                any_fail = true;
+                Check::fail(
+                    "GSettings schema",
+                    format!("{schema_id} NOT FOUND. Run 'glib-compile-schemas' on the extension's schemas directory."),
+                ).print();
             }
         }
     }
