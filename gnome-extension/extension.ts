@@ -260,14 +260,26 @@ export default class DictationExtension extends Extension {
             this._virtualKeyboard = seat.create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
         }
 
-        for (let i = 0; i < text.length; i++) {
+        // For long strings, typing synchronously drops characters due to input buffer overflow.
+        // We type them asynchronously with a small delay.
+        let i = 0;
+        let keyboard = this._virtualKeyboard;
+        
+        let typeNextChar = () => {
+            if (i >= text.length) return GLib.SOURCE_REMOVE;
+            
             let char = text.charCodeAt(i);
             let keyval = Gdk.unicode_to_keyval(char);
             if (keyval) {
-                this._virtualKeyboard.notify_keyval(Clutter.get_current_event_time(), keyval, Clutter.KeyState.PRESSED);
-                this._virtualKeyboard.notify_keyval(Clutter.get_current_event_time(), keyval, Clutter.KeyState.RELEASED);
+                let time = Clutter.get_current_event_time();
+                keyboard.notify_keyval(time, keyval, Clutter.KeyState.PRESSED);
+                keyboard.notify_keyval(time, keyval, Clutter.KeyState.RELEASED);
             }
-        }
+            i++;
+            return GLib.SOURCE_CONTINUE;
+        };
+
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2, typeNextChar);
     }
 
     private _registerShortcut(shortcut: string) {
