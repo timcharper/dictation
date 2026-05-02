@@ -35,3 +35,8 @@ cargo run -- extension listen
 ```sh
 ./test/scripts/child-gnome-session.sh stop
 ```
+
+## General Rules
+
+- **Run Tests**: Always run relevant tests (e.g., `cargo test`) after making any code changes to verify correctness and prevent regressions.
+
