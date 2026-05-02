@@ -103,20 +103,53 @@ impl Transcriber for WhisperClient {
             .await
             .map_err(|e| e.to_string())?;
 
-        let stream = response.bytes_stream().map(|res| {
-            res.map_err(|e| e.to_string())
-                .and_then(|b| {
-                    let mut resp = serde_json::from_slice::<InternalTranscriptionResponse>(&b)
-                        .map_err(|e| {
-                            format!("JSON parse error: {} (body: {})", e, String::from_utf8_lossy(&b))
-                        })?;
-                    resp.sanitize();
-                    Ok(TranscriptionResult {
-                        text: resp.text,
-                        is_final: resp.is_final,
-                    })
-                })
-        });
+        let bytes_stream = response.bytes_stream();
+        let buffer = Vec::new();
+
+        let stream = futures_util::stream::unfold(
+            (bytes_stream, buffer),
+            |(mut bytes_stream, mut buffer)| async move {
+                loop {
+                    if !buffer.is_empty() {
+                        let mut de = serde_json::Deserializer::from_slice(&buffer).into_iter::<InternalTranscriptionResponse>();
+                        if let Some(res) = de.next() {
+                            match res {
+                                Ok(mut resp) => {
+                                    let consumed = de.byte_offset();
+                                    buffer.drain(..consumed);
+                                    resp.sanitize();
+                                    let result = Ok(TranscriptionResult {
+                                        text: resp.text,
+                                        is_final: resp.is_final,
+                                    });
+                                    return Some((result, (bytes_stream, buffer)));
+                                }
+                                Err(e) if e.is_eof() => {
+                                    // Need more data
+                                }
+                                Err(e) => {
+                                    let body_snippet = String::from_utf8_lossy(&buffer);
+                                    let body_snippet = if body_snippet.len() > 100 {
+                                        format!("{}...", &body_snippet[..100])
+                                    } else {
+                                        body_snippet.to_string()
+                                    };
+                                    let result = Err(format!("JSON parse error: {} (body: {})", e, body_snippet));
+                                    buffer.clear();
+                                    return Some((result, (bytes_stream, buffer)));
+                                }
+                            }
+                        }
+                    }
+
+                    match bytes_stream.next().await {
+                        Some(Ok(b)) => buffer.extend_from_slice(&b),
+                        Some(Err(e)) => return Some((Err(e.to_string()), (bytes_stream, buffer))),
+                        None => return None,
+                    }
+                }
+            },
+        );
 
         Ok(Box::pin(stream))
     }
