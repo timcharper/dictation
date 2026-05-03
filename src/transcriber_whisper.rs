@@ -4,6 +4,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::pin::Pin;
 use async_trait::async_trait;
+use tokio_stream::wrappers::ReceiverStream;
 use crate::traits::{AudioFormat, Transcriber, TranscriptionResult};
 
 #[derive(Debug, Deserialize)]
@@ -68,19 +69,6 @@ impl Transcriber for WhisperClient {
         format: AudioFormat,
         audio_stream: Pin<Box<dyn Stream<Item = Bytes> + Send>>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<TranscriptionResult, String>> + Send>>, String> {
-        let mut audio_stream = audio_stream;
-        let mut raw_samples = Vec::new();
-        while let Some(chunk) = audio_stream.next().await {
-            raw_samples.extend_from_slice(&chunk);
-        }
-
-        let wav_bytes = Self::build_wav(format, &raw_samples);
-
-        // Save last recording to RAM for debugging (e.g. aplay /dev/shm/dictation_last.wav)
-        if let Err(e) = std::fs::write("/dev/shm/dictation_last.wav", &wav_bytes) {
-            eprintln!("[debug] Failed to save debug WAV: {e}");
-        }
-
         let mut target_url = self.url.clone();
         if !target_url.contains("/inference") {
             if !target_url.ends_with('/') {
@@ -91,20 +79,50 @@ impl Transcriber for WhisperClient {
 
         let mut query_params = Vec::new();
         if let Some(prompt) = &self.prompt {
-            query_params.push(("prompt", prompt.as_str()));
+            query_params.push(("prompt", prompt.clone()));
         }
 
-        let response = self.client
-            .post(&target_url)
-            .query(&query_params)
-            .header("Content-Type", "audio/wav")
-            .body(wav_bytes)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let client = self.client.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
 
-        let bytes_stream = response.bytes_stream();
-        Ok(parse_whisper_stream(bytes_stream))
+        tokio::spawn(async move {
+            let mut audio_stream = audio_stream;
+            let mut raw_samples = Vec::new();
+            while let Some(chunk) = audio_stream.next().await {
+                raw_samples.extend_from_slice(&chunk);
+            }
+
+            let wav_bytes = Self::build_wav(format, &raw_samples);
+
+            // Save last recording to RAM for debugging
+            if let Err(e) = std::fs::write("/dev/shm/dictation_last.wav", &wav_bytes) {
+                eprintln!("[debug] Failed to save debug WAV: {e}");
+            }
+
+            let response_res = client
+                .post(&target_url)
+                .query(&query_params)
+                .header("Content-Type", "audio/wav")
+                .body(wav_bytes)
+                .send()
+                .await;
+
+            match response_res {
+                Ok(response) => {
+                    let mut bytes_stream = parse_whisper_stream(response.bytes_stream());
+                    while let Some(res) = bytes_stream.next().await {
+                        if tx.send(res).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string())).await;
+                }
+            }
+        });
+
+        Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
     fn set_prompt(&mut self, prompt: String) {

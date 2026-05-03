@@ -1,7 +1,10 @@
 use std::time::Duration;
+use std::pin::Pin;
 use zbus::Connection;
 use zbus::fdo::DBusProxy;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
+use bytes::Bytes;
 
 use crate::audio;
 use crate::config::Config;
@@ -9,6 +12,7 @@ use crate::extension_proxy::ExtensionProxy;
 use crate::mpris;
 use crate::recorder;
 use crate::transcriber_factory::create_transcriber;
+use crate::traits::TranscriptionResult;
 use crate::vad::VadProcessor;
 use crate::accessibility::AccessibilityManager;
 
@@ -105,6 +109,9 @@ struct RecordingState {
     vad_processor: VadProcessor,
     is_speaking: bool,
     cursor_context: Option<String>,
+    audio_tx: tokio::sync::mpsc::Sender<Bytes>,
+    transcription_stream: Pin<Box<dyn tokio_stream::Stream<Item = Result<TranscriptionResult, String>> + Send>>,
+    full_text: String,
 }
 
 struct DaemonServer {
@@ -116,6 +123,11 @@ impl DaemonServer {
     async fn trigger(&self) {
         let _ = self.trigger_tx.send(()).await;
     }
+}
+
+enum RecordingEvent {
+    Audio(Vec<f32>),
+    Transcription(Result<TranscriptionResult, String>),
 }
 
 pub async fn run_daemon() {
@@ -371,61 +383,42 @@ pub async fn run_daemon() {
                                     &state.config.sound,
                                 );
 
-                                let samples = state.vad_processor.take_transcription_samples();
-                                if samples.is_empty() {
-                                    println!("No audio captured.");
-                                    let _ = proxy.update("audio-input-microphone-symbolic", get_menu_items(&history_mgr), "idle", "").await;
-                                    continue;
-                                }
-
-                                let format = crate::traits::AudioFormat {
-                                    sample_rate: 16000,
-                                    channels: 1,
-                                };
-                                let raw_bytes = bytes::Bytes::from(bytemuck::cast_slice::<f32, u8>(&samples).to_vec());
-
-                                let transcriber = create_transcriber(&state.config.backend, state.cursor_context.clone());
+                                // Close the audio stream
+                                drop(state.audio_tx);
 
                                 println!("Transcribing...");
-                                let bytes_only_stream = futures_util::stream::once(async move { raw_bytes });
-
-                                match transcriber.stream_transcription(format, Box::pin(bytes_only_stream)).await {
-                                    Ok(mut transcription_stream) => {
-                                        let mut full_text = String::new();
-                                        while let Some(res) = transcription_stream.next().await {
-                                            match res {
-                                                Ok(resp) => {
-                                                    if resp.is_final {
-                                                        full_text = resp.text;
-                                                    } else if !resp.text.is_empty() {
-                                                        full_text = resp.text;
-                                                    }
-                                                },
-                                                Err(e) => eprintln!("Transcription error: {:?}", e),
+                                let mut full_text = state.full_text;
+                                while let Some(res) = state.transcription_stream.next().await {
+                                    match res {
+                                        Ok(resp) => {
+                                            if resp.is_final {
+                                                full_text = resp.text;
+                                            } else if !resp.text.is_empty() {
+                                                full_text = resp.text;
                                             }
-                                        }
+                                        },
+                                        Err(e) => eprintln!("Transcription error: {:?}", e),
+                                    }
+                                }
 
-                                        if !full_text.is_empty() {
-                                            let elapsed = stop_time.elapsed();
-                                            let delay = std::time::Duration::from_millis(state.config.typing_delay_ms);
-                                            if elapsed < delay {
-                                                let remaining = delay - elapsed;
-                                                println!("Transcribed: '{}'. Delaying {}ms more before typing...", full_text, remaining.as_millis());
-                                                tokio::time::sleep(remaining).await;
-                                            } else {
-                                                println!("Transcribed: '{}'. Typing immediately.", full_text);
-                                            }
-                                            let text_to_type = match state.cursor_context.as_deref().and_then(|s| s.chars().last()) {
-                                                Some(c) if !no_space_before_chars().contains(&c) => format!(" {}", full_text),
-                                                _ => full_text.clone(),
-                                            };
-                                            let _ = proxy.type_string(&text_to_type).await;
-                                            history_mgr.add_entry(full_text);
-                                        } else {
-                                            println!("No text transcribed.");
-                                        }
-                                    },
-                                    Err(e) => eprintln!("Failed to start transcription: {:?}", e),
+                                if !full_text.is_empty() {
+                                    let elapsed = stop_time.elapsed();
+                                    let delay = std::time::Duration::from_millis(state.config.typing_delay_ms);
+                                    if elapsed < delay {
+                                        let remaining = delay - elapsed;
+                                        println!("Transcribed: '{}'. Delaying {}ms more before typing...", full_text, remaining.as_millis());
+                                        tokio::time::sleep(remaining).await;
+                                    } else {
+                                        println!("Transcribed: '{}'. Typing immediately.", full_text);
+                                    }
+                                    let text_to_type = match state.cursor_context.as_deref().and_then(|s| s.chars().last()) {
+                                        Some(c) if !no_space_before_chars().contains(&c) => format!(" {}", full_text),
+                                        _ => full_text.clone(),
+                                    };
+                                    let _ = proxy.type_string(&text_to_type).await;
+                                    history_mgr.add_entry(full_text);
+                                } else {
+                                    println!("No text transcribed.");
                                 }
 
                                 println!("Dictation cycle complete.");
@@ -517,6 +510,21 @@ pub async fn run_daemon() {
                                     output.config.channels as u16,
                                 );
 
+                                // 4. Initialize Transcriber and Audio Stream
+                                let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Bytes>(100);
+                                let transcriber = create_transcriber(&config.backend, cursor_context.clone());
+                                let transcription_stream = match transcriber.stream_transcription(
+                                    crate::traits::AudioFormat { sample_rate: 16000, channels: 1 },
+                                    Box::pin(ReceiverStream::new(audio_rx))
+                                ).await {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        eprintln!("Failed to start transcription: {}", e);
+                                        // Still start recording so we don't crash, but it won't work
+                                        Box::pin(tokio_stream::iter(vec![Err(e)]))
+                                    }
+                                };
+
                                 recording_state = Some(RecordingState {
                                     recorder_output: output,
                                     original_volume,
@@ -525,6 +533,9 @@ pub async fn run_daemon() {
                                     vad_processor,
                                     is_speaking: false,
                                     cursor_context,
+                                    audio_tx,
+                                    transcription_stream,
+                                    full_text: String::new(),
                                 });
                                 println!("[DEBUG] Recording started successfully.");
                             }
@@ -539,34 +550,65 @@ pub async fn run_daemon() {
                         }
                         config = new_config;
                     }
-                    // Pull audio samples if recording
-                    Some(samples_chunk) = async {
+                    // Poll audio samples and transcription results if recording
+                    Some(event) = async {
                         if let Some(state) = &mut recording_state {
-                            state.recorder_output.audio_stream.next().await
+                            tokio::select! {
+                                biased;
+                                Some(chunk) = state.recorder_output.audio_stream.next() => Some(RecordingEvent::Audio(chunk)),
+                                Some(res) = state.transcription_stream.next() => Some(RecordingEvent::Transcription(res)),
+                                else => None,
+                            }
                         } else {
                             std::future::pending().await
                         }
                     } => {
                         if let Some(state) = &mut recording_state {
-                            let speaking = state.vad_processor.process_samples(&samples_chunk);
-                            if speaking != state.is_speaking {
-                                state.is_speaking = speaking;
-                                let icon = if speaking {
-                                    "audio-input-microphone-high-symbolic"
-                                } else {
-                                    "media-record-symbolic"
-                                };
-                                let color = if speaking {
-                                    "#00FF00".to_string() // Bright green when speaking
-                                } else {
-                                    state.config.recording_color.clone()
-                                };
-                                
-                                let proxy_clone = proxy.clone();
-                                let menu_items = get_menu_items(&history_mgr);
-                                tokio::spawn(async move {
-                                    let _ = proxy_clone.update(icon, menu_items, "recording", &color).await;
-                                });
+                            match event {
+                                RecordingEvent::Audio(samples_chunk) => {
+                                    let speaking = state.vad_processor.process_samples(&samples_chunk);
+                                    
+                                    // Stream processed samples to transcriber
+                                    let processed_samples = state.vad_processor.take_transcription_samples();
+                                    if !processed_samples.is_empty() {
+                                        let raw_bytes = Bytes::from(bytemuck::cast_slice::<f32, u8>(&processed_samples).to_vec());
+                                        if let Err(e) = state.audio_tx.try_send(raw_bytes) {
+                                            eprintln!("Warning: Audio channel full, dropping samples: \"{:?}\"", e);
+                                        }
+                                    }
+
+                                    if speaking != state.is_speaking {
+                                        state.is_speaking = speaking;
+                                        let icon = if speaking {
+                                            "audio-input-microphone-high-symbolic"
+                                        } else {
+                                            "media-record-symbolic"
+                                        };
+                                        let color = if speaking {
+                                            "#00FF00".to_string() // Bright green when speaking
+                                        } else {
+                                            state.config.recording_color.clone()
+                                        };
+                                        
+                                        let proxy_clone = proxy.clone();
+                                        let menu_items = get_menu_items(&history_mgr);
+                                        tokio::spawn(async move {
+                                            let _ = proxy_clone.update(icon, menu_items, "recording", &color).await;
+                                        });
+                                    }
+                                }
+                                RecordingEvent::Transcription(transcription_res) => {
+                                    match transcription_res {
+                                        Ok(resp) => {
+                                            if resp.is_final {
+                                                state.full_text = resp.text;
+                                            } else if !resp.text.is_empty() {
+                                                state.full_text = resp.text;
+                                            }
+                                        }
+                                        Err(e) => eprintln!("Transcription error during recording: {}", e),
+                                    }
+                                }
                             }
                         }
                     }
