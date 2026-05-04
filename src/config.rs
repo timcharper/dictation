@@ -26,7 +26,24 @@ pub struct Config {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BackendConfig {
-    WhisperCpp { url: String },
+    WhisperCpp {
+        url: String,
+    },
+    OpenAi {
+        #[serde(default = "default_openai_url")]
+        url: String,
+        api_key: String,
+        #[serde(default = "default_openai_model")]
+        model: String,
+    },
+}
+
+fn default_openai_url() -> String {
+    "https://api.openai.com/v1/audio/transcriptions".to_string()
+}
+
+fn default_openai_model() -> String {
+    "whisper-1".to_string()
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

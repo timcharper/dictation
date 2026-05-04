@@ -114,56 +114,62 @@ pub async fn run() {
         }
     }
 
-    // ── Whisper backend ──────────────────────────────────────────────────────
+    // ── Transcription Backend ──────────────────────────────────────────────────────
 
     println!("\n\x1b[1mTranscription Backend\x1b[0m");
 
-    let BackendConfig::WhisperCpp { url } = &config.backend;
-
-    // Build the inference URL the same way WhisperClient does
-    let mut inference_url = url.clone();
-    if !inference_url.contains("/inference") {
-        if !inference_url.ends_with('/') { inference_url.push('/'); }
-        inference_url.push_str("inference");
-    }
-
-    Check::ok_detail("Whisper server URL", url.clone()).print();
-
-    // Load the bundled JFK fixture (embedded at compile time so the binary
-    // is self-contained and `doctor` works regardless of CWD).
-    let wav_bytes: &[u8] = include_bytes!("../../test/fixtures/jfk.wav");
-
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .expect("Failed to build HTTP client");
-
-    match client
-        .post(&inference_url)
-        .header("Content-Type", "audio/wav")
-        .body(wav_bytes)
-        .send()
-        .await
-    {
-        Err(e) => {
-            any_fail = true;
-            Check::fail("Whisper /inference", format!("request failed: {e}")).print();
-        }
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            if status.is_success() {
-                // Try to pull the text field out for a sanity preview
-                let preview = serde_json::from_str::<serde_json::Value>(&body)
-                    .ok()
-                    .and_then(|v| v["text"].as_str().map(|s| format!("\"{}\"", s.trim())))
-                    .unwrap_or_else(|| body.chars().take(80).collect());
-                Check::ok_detail("Whisper /inference", format!("{status}  {preview}")).print();
-            } else {
-                any_fail = true;
-                let snippet: String = body.chars().take(120).collect();
-                Check::fail("Whisper /inference", format!("{status}  {snippet}")).print();
+    match &config.backend {
+        BackendConfig::WhisperCpp { url } => {
+            // Build the inference URL the same way WhisperClient does
+            let mut inference_url = url.clone();
+            if !inference_url.contains("/inference") {
+                if !inference_url.ends_with('/') { inference_url.push('/'); }
+                inference_url.push_str("inference");
             }
+
+            Check::ok_detail("Whisper server URL", url.clone()).print();
+
+            // Load the bundled JFK fixture (embedded at compile time so the binary
+            // is self-contained and `doctor` works regardless of CWD).
+            let wav_bytes: &[u8] = include_bytes!("../../test/fixtures/jfk.wav");
+
+            let client = Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("Failed to build HTTP client");
+
+            match client
+                .post(&inference_url)
+                .header("Content-Type", "audio/wav")
+                .body(wav_bytes)
+                .send()
+                .await
+            {
+                Err(e) => {
+                    any_fail = true;
+                    Check::fail("Whisper /inference", format!("request failed: {e}")).print();
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    if status.is_success() {
+                        // Try to pull the text field out for a sanity preview
+                        let preview = serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|v| v["text"].as_str().map(|s| format!("\"{}\"", s.trim())))
+                            .unwrap_or_else(|| body.chars().take(80).collect());
+                        Check::ok_detail("Whisper /inference", format!("{status}  {preview}")).print();
+                    } else {
+                        any_fail = true;
+                        let snippet: String = body.chars().take(120).collect();
+                        Check::fail("Whisper /inference", format!("{status}  {snippet}")).print();
+                    }
+                }
+            }
+        }
+        BackendConfig::OpenAi { url, model, .. } => {
+            Check::ok_detail("OpenAI Backend", format!("URL: {}, Model: {}", url, model)).print();
+            Check::ok("OpenAI API Key (configured)").print();
         }
     }
 

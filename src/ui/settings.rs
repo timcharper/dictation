@@ -163,6 +163,7 @@ pub fn build_ui(app: &Application, runtime: Arc<Runtime>) {
         let cfg = config.lock().unwrap();
         match &cfg.backend {
             BackendConfig::WhisperCpp { url } => url.clone(),
+            BackendConfig::OpenAi { url, .. } => url.clone(),
         }
     };
 

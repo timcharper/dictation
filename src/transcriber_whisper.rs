@@ -88,9 +88,15 @@ impl Transcriber for WhisperClient {
         tokio::spawn(async move {
             let mut audio_stream = audio_stream;
             let mut raw_samples = Vec::new();
+            let mut chunks_received = 0;
             while let Some(chunk) = audio_stream.next().await {
                 raw_samples.extend_from_slice(&chunk);
+                chunks_received += 1;
+                if chunks_received % 10 == 0 {
+                    println!("[DEBUG] Transcriber received {} audio chunks ({} bytes total)...", chunks_received, raw_samples.len());
+                }
             }
+            println!("[DEBUG] Transcription background task: audio stream closed. Total chunks: {}, Total bytes: {}. Starting upload...", chunks_received, raw_samples.len());
 
             let wav_bytes = Self::build_wav(format, &raw_samples);
 
