@@ -167,9 +167,50 @@ pub async fn run() {
                 }
             }
         }
-        BackendConfig::OpenAi { url, model, .. } => {
+        BackendConfig::OpenAi { url, api_key, model } => {
             Check::ok_detail("OpenAI Backend", format!("URL: {}, Model: {}", url, model)).print();
-            Check::ok("OpenAI API Key (configured)").print();
+
+            let client = Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("Failed to build HTTP client");
+
+            let jfk_wav = include_bytes!("../../test/fixtures/jfk.wav");
+
+            let form = reqwest::multipart::Form::new()
+                .text("model", model.clone())
+                .part("file", reqwest::multipart::Part::bytes(jfk_wav.to_vec())
+                    .file_name("audio.wav")
+                    .mime_str("audio/wav")
+                    .unwrap());
+
+            match client
+                .post(url)
+                .bearer_auth(api_key)
+                .multipart(form)
+                .send()
+                .await
+            {
+                Err(e) => {
+                    any_fail = true;
+                    Check::fail("OpenAI Transcription", format!("request failed: {e}")).print();
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    if status.is_success() {
+                        let preview = serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|v| v["text"].as_str().map(|s| format!("\"{}\"", s.trim())))
+                            .unwrap_or_else(|| body.chars().take(80).collect());
+                        Check::ok_detail("OpenAI Transcription", format!("{status}  {preview}")).print();
+                    } else {
+                        any_fail = true;
+                        let snippet: String = body.chars().take(120).collect();
+                        Check::fail("OpenAI Transcription", format!("{status}  {snippet}")).print();
+                    }
+                }
+            }
         }
     }
 
