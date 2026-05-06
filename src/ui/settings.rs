@@ -1,7 +1,7 @@
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use libadwaita::{Application, ApplicationWindow, PreferencesGroup, ActionRow, PreferencesPage, EntryRow, HeaderBar, ToolbarView};
-use gtk4::{Box as GtkBox, Orientation, Button, FileDialog, glib};
+use libadwaita::{Application, ApplicationWindow, PreferencesGroup, ActionRow, PreferencesPage, EntryRow, HeaderBar, ToolbarView, ComboRow, PasswordEntryRow};
+use gtk4::{Box as GtkBox, Orientation, Button, FileDialog, glib, StringList};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use crate::config::{Config, BackendConfig, LlmConfig};
@@ -154,34 +154,136 @@ pub fn build_ui(app: &Application, runtime: Arc<Runtime>) {
     });
     general_group.add(&transcribing_color_row);
 
-    // Whisper Server URL
+    // Transcription Backend
     let whisper_group = PreferencesGroup::builder()
-        .title("Transcription (Whisper)")
+        .title("Transcription Backend")
         .build();
-    
-    let initial_whisper_url = {
+
+    let backend_list = StringList::new(&["Local whisper.cpp", "OpenAI Whisper API"]);
+    let backend_combo = ComboRow::builder()
+        .title("Service")
+        .model(&backend_list)
+        .build();
+
+    let (initial_backend_idx, initial_whisper_url, initial_openai_url, initial_openai_api_key, initial_openai_model) = {
         let cfg = config.lock().unwrap();
         match &cfg.backend {
-            BackendConfig::WhisperCpp { url } => url.clone(),
-            BackendConfig::OpenAi { url, .. } => url.clone(),
+            BackendConfig::WhisperCpp { url } => (0, url.clone(), "https://api.openai.com/v1/audio/transcriptions".to_string(), "".to_string(), "whisper-1".to_string()),
+            BackendConfig::OpenAi { url, api_key, model } => (1, "http://localhost:58080".to_string(), url.clone(), api_key.clone(), model.clone()),
         }
     };
+
+    backend_combo.set_selected(initial_backend_idx);
 
     let whisper_url_row = EntryRow::builder()
         .title("Whisper Server URL")
         .text(&initial_whisper_url)
+        .visible(initial_backend_idx == 0)
         .build();
-    
+
+    let openai_url_row = EntryRow::builder()
+        .title("OpenAI API URL")
+        .text(&initial_openai_url)
+        .visible(initial_backend_idx == 1)
+        .build();
+
+    let openai_api_key_row = PasswordEntryRow::builder()
+        .title("OpenAI API Key")
+        .text(&initial_openai_api_key)
+        .visible(initial_backend_idx == 1)
+        .build();
+
+    let openai_model_row = EntryRow::builder()
+        .title("OpenAI Model")
+        .text(&initial_openai_model)
+        .visible(initial_backend_idx == 1)
+        .build();
+
+    // 1. Backend Selection Callback
     let config_clone = config.clone();
-    whisper_url_row.connect_text_notify(move |row| {
+    let whisper_url_row_clone = whisper_url_row.clone();
+    let openai_url_row_clone = openai_url_row.clone();
+    let openai_api_key_row_clone = openai_api_key_row.clone();
+    let openai_model_row_clone = openai_model_row.clone();
+
+    backend_combo.connect_selected_notify(move |combo| {
+        let selected = combo.selected();
+        whisper_url_row_clone.set_visible(selected == 0);
+        openai_url_row_clone.set_visible(selected == 1);
+        openai_api_key_row_clone.set_visible(selected == 1);
+        openai_model_row_clone.set_visible(selected == 1);
+
         let mut cfg = config_clone.lock().unwrap();
-        cfg.backend = BackendConfig::WhisperCpp {
-            url: row.text().to_string(),
-        };
+        if selected == 0 {
+            cfg.backend = BackendConfig::WhisperCpp {
+                url: whisper_url_row_clone.text().to_string(),
+            };
+        } else {
+            cfg.backend = BackendConfig::OpenAi {
+                url: openai_url_row_clone.text().to_string(),
+                api_key: openai_api_key_row_clone.text().to_string(),
+                model: openai_model_row_clone.text().to_string(),
+            };
+        }
         cfg.save();
     });
 
+    // 2. Field Update Callbacks
+    let config_clone = config.clone();
+    whisper_url_row.connect_text_notify(move |row| {
+        let mut cfg = config_clone.lock().unwrap();
+        if let BackendConfig::WhisperCpp { .. } = cfg.backend {
+            cfg.backend = BackendConfig::WhisperCpp {
+                url: row.text().to_string(),
+            };
+            cfg.save();
+        }
+    });
+
+    let config_clone = config.clone();
+    openai_url_row.connect_text_notify(move |row| {
+        let mut cfg = config_clone.lock().unwrap();
+        if let BackendConfig::OpenAi { api_key, model, .. } = &cfg.backend {
+            cfg.backend = BackendConfig::OpenAi {
+                url: row.text().to_string(),
+                api_key: api_key.clone(),
+                model: model.clone(),
+            };
+            cfg.save();
+        }
+    });
+
+    let config_clone = config.clone();
+    openai_api_key_row.connect_text_notify(move |row| {
+        let mut cfg = config_clone.lock().unwrap();
+        if let BackendConfig::OpenAi { url, model, .. } = &cfg.backend {
+            cfg.backend = BackendConfig::OpenAi {
+                url: url.clone(),
+                api_key: row.text().to_string(),
+                model: model.clone(),
+            };
+            cfg.save();
+        }
+    });
+
+    let config_clone = config.clone();
+    openai_model_row.connect_text_notify(move |row| {
+        let mut cfg = config_clone.lock().unwrap();
+        if let BackendConfig::OpenAi { url, api_key, .. } = &cfg.backend {
+            cfg.backend = BackendConfig::OpenAi {
+                url: url.clone(),
+                api_key: api_key.clone(),
+                model: row.text().to_string(),
+            };
+            cfg.save();
+        }
+    });
+
+    whisper_group.add(&backend_combo);
     whisper_group.add(&whisper_url_row);
+    whisper_group.add(&openai_url_row);
+    whisper_group.add(&openai_api_key_row);
+    whisper_group.add(&openai_model_row);
 
     // LLM Provider (Ollama)
     let llm_group = PreferencesGroup::builder()
