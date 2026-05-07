@@ -328,12 +328,18 @@ pub async fn run_daemon() {
                             std::future::pending::<Option<_>>().await
                         }
                     } => {
-                        if let Some(sig) = name_owner_signal {
-                            if let Ok(args) = sig.args() {
-                                if args.name == "com.timcharper.dictation.Extension" && args.new_owner.is_none() {
-                                    println!("Extension bus name disappeared (GNOME Shell restart?). Reconnecting...");
-                                    break 'retry;
+                        match name_owner_signal {
+                            Some(sig) => {
+                                if let Ok(args) = sig.args() {
+                                    if args.name == "com.timcharper.dictation.Extension" && args.new_owner.is_none() {
+                                        println!("Extension bus name disappeared (GNOME Shell restart?). Reconnecting...");
+                                        break 'retry;
+                                    }
                                 }
+                            }
+                            None => {
+                                eprintln!("Name owner stream ended. Reconnecting...");
+                                break 'retry;
                             }
                         }
                     }
@@ -362,182 +368,188 @@ pub async fn run_daemon() {
                     }
                     _trigger = async {
                         tokio::select! {
-                            _ = shortcut_stream.next() => Some(()),
-                            _ = trigger_rx.recv() => Some(()),
+                            res = shortcut_stream.next() => res.map(|_| ()),
+                            res = trigger_rx.recv() => res.map(|_| ()),
                         }
                     } => {
-                        if let Some(_) = _trigger {
-                            if let Some(mut state) = recording_state.take() {
-                                println!("Trigger received! Stopping recording and transcribing...");
-                                let stop_time = std::time::Instant::now();
+                        match _trigger {
+                            Some(_) => {
+                                if let Some(mut state) = recording_state.take() {
+                                    println!("Trigger received! Stopping recording and transcribing...");
+                                    let stop_time = std::time::Instant::now();
 
-                                // Signal transcribing state
-                                let _ = proxy.update("emblem-synchronizing-symbolic", get_menu_items(&history_mgr), "transcribing", &state.config.transcribing_color).await;
+                                    // Signal transcribing state
+                                    let _ = proxy.update("emblem-synchronizing-symbolic", get_menu_items(&history_mgr), "transcribing", &state.config.transcribing_color).await;
 
-                                // The guard will handle restoration on drop (at the end of this block)
-                                let _guard = RecordingGuard::new(
-                                    state.original_volume,
-                                    std::mem::take(&mut state.paused_players),
-                                    &mpris_client,
-                                    &conn,
-                                    &state.config.sound,
-                                );
+                                    // The guard will handle restoration on drop (at the end of this block)
+                                    let _guard = RecordingGuard::new(
+                                        state.original_volume,
+                                        std::mem::take(&mut state.paused_players),
+                                        &mpris_client,
+                                        &conn,
+                                        &state.config.sound,
+                                    );
 
-                                // Close the audio stream
-                                drop(state.audio_tx);
+                                    // Close the audio stream
+                                    drop(state.audio_tx);
 
-                                println!("Transcribing...");
-                                let mut full_text = state.full_text;
-                                while let Some(res) = state.transcription_stream.next().await {
-                                    match res {
-                                        Ok(resp) => {
-                                            if resp.is_final {
-                                                full_text = resp.text;
-                                            } else if !resp.text.is_empty() {
-                                                full_text = resp.text;
-                                            }
-                                        },
-                                        Err(e) => eprintln!("Transcription error: {:?}", e),
+                                    println!("Transcribing...");
+                                    let mut full_text = state.full_text;
+                                    while let Some(res) = state.transcription_stream.next().await {
+                                        match res {
+                                            Ok(resp) => {
+                                                if resp.is_final {
+                                                    full_text = resp.text;
+                                                } else if !resp.text.is_empty() {
+                                                    full_text = resp.text;
+                                                }
+                                            },
+                                            Err(e) => eprintln!("Transcription error: {:?}", e),
+                                        }
                                     }
-                                }
 
-                                if !full_text.is_empty() {
-                                    let elapsed = stop_time.elapsed();
-                                    let delay = std::time::Duration::from_millis(state.config.typing_delay_ms);
-                                    if elapsed < delay {
-                                        let remaining = delay - elapsed;
-                                        println!("Transcribed: '{}'. Delaying {}ms more before typing...", full_text, remaining.as_millis());
-                                        tokio::time::sleep(remaining).await;
+                                    if !full_text.is_empty() {
+                                        let elapsed = stop_time.elapsed();
+                                        let delay = std::time::Duration::from_millis(state.config.typing_delay_ms);
+                                        if elapsed < delay {
+                                            let remaining = delay - elapsed;
+                                            println!("Transcribed: '{}'. Delaying {}ms more before typing...", full_text, remaining.as_millis());
+                                            tokio::time::sleep(remaining).await;
+                                        } else {
+                                            println!("Transcribed: '{}'. Typing immediately.", full_text);
+                                        }
+                                        let text_to_type = match state.cursor_context.as_deref().and_then(|s| s.chars().last()) {
+                                            Some(c) if !no_space_before_chars().contains(&c) => format!(" {}", full_text),
+                                            _ => full_text.clone(),
+                                        };
+                                        let _ = proxy.type_string(&text_to_type).await;
+                                        history_mgr.add_entry(full_text);
                                     } else {
-                                        println!("Transcribed: '{}'. Typing immediately.", full_text);
+                                        println!("No text transcribed.");
                                     }
-                                    let text_to_type = match state.cursor_context.as_deref().and_then(|s| s.chars().last()) {
-                                        Some(c) if !no_space_before_chars().contains(&c) => format!(" {}", full_text),
-                                        _ => full_text.clone(),
-                                    };
-                                    let _ = proxy.type_string(&text_to_type).await;
-                                    history_mgr.add_entry(full_text);
+
+                                    println!("Dictation cycle complete.");
+                                    let _ = proxy.update("audio-input-microphone-symbolic", get_menu_items(&history_mgr), "idle", "").await;
                                 } else {
-                                    println!("No text transcribed.");
-                                }
+                                    println!("Shortcut pressed! Starting recording...");
+                                    let config = Config::load();
 
-                                println!("Dictation cycle complete.");
-                                let _ = proxy.update("audio-input-microphone-symbolic", get_menu_items(&history_mgr), "idle", "").await;
-                            } else {
-                                println!("Shortcut pressed! Starting recording...");
-                                let config = Config::load();
+                                    println!("[DEBUG] Updating extension to recording state...");
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_millis(500),
+                                        proxy.update("media-record-symbolic", get_menu_items(&history_mgr), "recording", &config.recording_color)
+                                    ).await;
 
-                                println!("[DEBUG] Updating extension to recording state...");
-                                let _ = tokio::time::timeout(
-                                    Duration::from_millis(500),
-                                    proxy.update("media-record-symbolic", get_menu_items(&history_mgr), "recording", &config.recording_color)
-                                ).await;
-
-                                // 1. MPRIS Pause
-                                println!("[DEBUG] Pausing MPRIS players...");
-                                let mut paused_players = Vec::new();
-                                if let Ok(Ok(players)) = tokio::time::timeout(Duration::from_millis(500), mpris_client.find_players()).await {
-                                    for service in players {
-                                        if let Ok(Ok(player_proxy)) = tokio::time::timeout(Duration::from_millis(200), mpris_client.get_proxy(&service)).await {
-                                            if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_millis(200), player_proxy.playback_status()).await {
-                                                if status == "Playing" {
-                                                    if let Ok(Ok(metadata)) = tokio::time::timeout(Duration::from_millis(200), player_proxy.metadata()).await {
-                                                        let track_id = mpris::extract_track_id(&metadata);
-                                                        println!("Pausing player: {} (track: {})", service, track_id);
-                                                        let _ = tokio::time::timeout(Duration::from_millis(200), player_proxy.pause()).await;
-                                                        paused_players.push(mpris::PlayerState {
-                                                            service: service.clone(),
-                                                            track_id,
-                                                        });
+                                    // 1. MPRIS Pause
+                                    println!("[DEBUG] Pausing MPRIS players...");
+                                    let mut paused_players = Vec::new();
+                                    if let Ok(Ok(players)) = tokio::time::timeout(Duration::from_millis(500), mpris_client.find_players()).await {
+                                        for service in players {
+                                            if let Ok(Ok(player_proxy)) = tokio::time::timeout(Duration::from_millis(200), mpris_client.get_proxy(&service)).await {
+                                                if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_millis(200), player_proxy.playback_status()).await {
+                                                    if status == "Playing" {
+                                                        if let Ok(Ok(metadata)) = tokio::time::timeout(Duration::from_millis(200), player_proxy.metadata()).await {
+                                                            let track_id = mpris::extract_track_id(&metadata);
+                                                            println!("Pausing player: {} (track: {})", service, track_id);
+                                                            let _ = tokio::time::timeout(Duration::from_millis(200), player_proxy.pause()).await;
+                                                            paused_players.push(mpris::PlayerState {
+                                                                service: service.clone(),
+                                                                track_id,
+                                                            });
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                }
 
-                                // 2. Duck volume and play start sound
-                                println!("[DEBUG] Ducking volume and playing start sound...");
-                                let original_volume = tokio::time::timeout(
-                                    Duration::from_secs(1),
-                                    audio_mgr.duck_and_play_start(&proxy, &config.sound)
-                                ).await.unwrap_or(None);
+                                    // 2. Duck volume and play start sound
+                                    println!("[DEBUG] Ducking volume and playing start sound...");
+                                    let original_volume = tokio::time::timeout(
+                                        Duration::from_secs(1),
+                                        audio_mgr.duck_and_play_start(&proxy, &config.sound)
+                                    ).await.unwrap_or(None);
 
-                                let mut cursor_context = None;
-                                if let Some(mgr) = &accessibility_mgr {
-                                    println!("[DEBUG] Capturing AT-SPI context...");
-                                    let current_wm = match tokio::time::timeout(Duration::from_millis(500), proxy.get_focused_window_class()).await {
-                                        Ok(Ok(cls)) => cls,
-                                        _ => String::new(),
-                                    };
+                                    let mut cursor_context = None;
+                                    if let Some(mgr) = &accessibility_mgr {
+                                        println!("[DEBUG] Capturing AT-SPI context...");
+                                        let current_wm = match tokio::time::timeout(Duration::from_millis(500), proxy.get_focused_window_class()).await {
+                                            Ok(Ok(cls)) => cls,
+                                            _ => String::new(),
+                                        };
 
-                                    let is_stale = match &wm_at_last_focus {
-                                        Some(at_focus_wm) if at_focus_wm != &current_wm => {
-                                            eprintln!("[AT-SPI] Skipping stale context: focused window is '{current_wm}' but last AT-SPI focus was for '{at_focus_wm}'");
-                                            true
+                                        let is_stale = match &wm_at_last_focus {
+                                            Some(at_focus_wm) if at_focus_wm != &current_wm => {
+                                                eprintln!("[AT-SPI] Skipping stale context: focused window is '{current_wm}' but last AT-SPI focus was for '{at_focus_wm}'");
+                                                true
+                                            }
+                                            _ => false,
+                                        };
+
+                                        let is_blacklisted = !is_stale && !current_wm.is_empty() && config.accessibility_blacklist.iter().any(|pattern| {
+                                            regex::Regex::new(pattern)
+                                                .map(|re| re.is_match(&current_wm))
+                                                .unwrap_or(false)
+                                        });
+                                        
+                                        if !is_stale && !is_blacklisted {
+                                            println!("[DEBUG] Fetching cursor info from AT-SPI...");
+                                            match tokio::time::timeout(Duration::from_secs(1), mgr.get_cursor_info()).await {
+                                                Ok(Ok(Some(info))) => {
+                                                    println!("[DEBUG] AT-SPI context captured ({} chars)", info.text_before.len());
+                                                    cursor_context = Some(info.text_before);
+                                                },
+                                                Ok(Ok(None)) => println!("[DEBUG] AT-SPI: No cursor found"),
+                                                Ok(Err(e)) => eprintln!("[AT-SPI] get_cursor_info error: {e}"),
+                                                Err(_) => eprintln!("[AT-SPI] get_cursor_info timed out"),
+                                            }
                                         }
-                                        _ => false,
-                                    };
+                                    }
 
-                                    let is_blacklisted = !is_stale && !current_wm.is_empty() && config.accessibility_blacklist.iter().any(|pattern| {
-                                        regex::Regex::new(pattern)
-                                            .map(|re| re.is_match(&current_wm))
-                                            .unwrap_or(false)
-                                    });
+                                    // 3. Start Recorder
+                                    println!("[DEBUG] Initializing audio recorder...");
+                                    let recorder = recorder::AudioRecorder::new();
+                                    let output = recorder.start_recording();
                                     
-                                    if !is_stale && !is_blacklisted {
-                                        println!("[DEBUG] Fetching cursor info from AT-SPI...");
-                                        match tokio::time::timeout(Duration::from_secs(1), mgr.get_cursor_info()).await {
-                                            Ok(Ok(Some(info))) => {
-                                                println!("[DEBUG] AT-SPI context captured ({} chars)", info.text_before.len());
-                                                cursor_context = Some(info.text_before);
-                                            },
-                                            Ok(Ok(None)) => println!("[DEBUG] AT-SPI: No cursor found"),
-                                            Ok(Err(e)) => eprintln!("[AT-SPI] get_cursor_info error: {e}"),
-                                            Err(_) => eprintln!("[AT-SPI] get_cursor_info timed out"),
+                                    println!("[DEBUG] Setting up VAD processor...");
+                                    let vad_processor = VadProcessor::new(
+                                        output.config.sample_rate.0,
+                                        output.config.channels as u16,
+                                    );
+
+                                    // 4. Initialize Transcriber and Audio Stream
+                                    let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Bytes>(100);
+                                    let transcriber = create_transcriber(&config.backend, cursor_context.clone());
+                                    let transcription_stream = match transcriber.stream_transcription(
+                                        crate::traits::AudioFormat { sample_rate: 16000, channels: 1 },
+                                        Box::pin(ReceiverStream::new(audio_rx))
+                                    ).await {
+                                        Ok(s) => s,
+                                        Err(e) => {
+                                            eprintln!("Failed to start transcription: {}", e);
+                                            // Still start recording so we don't crash, but it won't work
+                                            Box::pin(tokio_stream::iter(vec![Err(e)]))
                                         }
-                                    }
+                                    };
+
+                                    recording_state = Some(RecordingState {
+                                        recorder_output: output,
+                                        original_volume,
+                                        paused_players,
+                                        config,
+                                        vad_processor,
+                                        is_speaking: false,
+                                        cursor_context,
+                                        audio_tx,
+                                        transcription_stream,
+                                        full_text: String::new(),
+                                    });
+                                    println!("[DEBUG] Recording started successfully.");
                                 }
-
-                                // 3. Start Recorder
-                                println!("[DEBUG] Initializing audio recorder...");
-                                let recorder = recorder::AudioRecorder::new();
-                                let output = recorder.start_recording();
-                                
-                                println!("[DEBUG] Setting up VAD processor...");
-                                let vad_processor = VadProcessor::new(
-                                    output.config.sample_rate.0,
-                                    output.config.channels as u16,
-                                );
-
-                                // 4. Initialize Transcriber and Audio Stream
-                                let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Bytes>(100);
-                                let transcriber = create_transcriber(&config.backend, cursor_context.clone());
-                                let transcription_stream = match transcriber.stream_transcription(
-                                    crate::traits::AudioFormat { sample_rate: 16000, channels: 1 },
-                                    Box::pin(ReceiverStream::new(audio_rx))
-                                ).await {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        eprintln!("Failed to start transcription: {}", e);
-                                        // Still start recording so we don't crash, but it won't work
-                                        Box::pin(tokio_stream::iter(vec![Err(e)]))
-                                    }
-                                };
-
-                                recording_state = Some(RecordingState {
-                                    recorder_output: output,
-                                    original_volume,
-                                    paused_players,
-                                    config,
-                                    vad_processor,
-                                    is_speaking: false,
-                                    cursor_context,
-                                    audio_tx,
-                                    transcription_stream,
-                                    full_text: String::new(),
-                                });
-                                println!("[DEBUG] Recording started successfully.");
+                            }
+                            None => {
+                                eprintln!("Shortcut stream ended; extension disconnected. Reconnecting...");
+                                break 'retry;
                             }
                         }
                     }
