@@ -2,7 +2,7 @@ use std::time::Duration;
 use std::pin::Pin;
 use zbus::Connection;
 use zbus::fdo::DBusProxy;
-use tokio_stream::StreamExt;
+use tokio_stream::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 use bytes::Bytes;
 
@@ -130,6 +130,20 @@ enum RecordingEvent {
     Transcription(Result<TranscriptionResult, String>),
 }
 
+async fn wait_for_trigger<S1, S2, T1, T2>(
+    shortcut_stream: &mut S1,
+    trigger_rx: &mut S2,
+) -> Option<()>
+where
+    S1: Stream<Item = T1> + Unpin,
+    S2: Stream<Item = T2> + Unpin,
+{
+    tokio::select! {
+        res = shortcut_stream.next() => res.map(|_| ()),
+        res = trigger_rx.next() => res.map(|_| ()),
+    }
+}
+
 pub async fn run_daemon() {
     let audio_mgr = audio::AudioManager::new();
     let mut history_mgr = crate::history::HistoryManager::load();
@@ -150,7 +164,7 @@ pub async fn run_daemon() {
             continue 'connection;
         }
 
-        let (trigger_tx, mut trigger_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (trigger_tx, trigger_rx) = tokio::sync::mpsc::channel::<()>(1);
         let daemon_server = DaemonServer { trigger_tx };
         conn.object_server()
             .at("/com/timcharper/dictation/Daemon", daemon_server)
@@ -190,6 +204,7 @@ pub async fn run_daemon() {
             Err(e) => { eprintln!("Warning: could not connect to org.freedesktop.DBus: {e}"); None }
         };
 
+        let mut trigger_stream = ReceiverStream::new(trigger_rx);
         let mut retry_delay = Duration::from_secs(2);
 
         'retry: loop {
@@ -366,12 +381,7 @@ pub async fn run_daemon() {
                             }
                         }
                     }
-                    _trigger = async {
-                        tokio::select! {
-                            res = shortcut_stream.next() => res.map(|_| ()),
-                            res = trigger_rx.recv() => res.map(|_| ()),
-                        }
-                    } => {
+                    _trigger = wait_for_trigger(&mut shortcut_stream, &mut trigger_stream) => {
                         match _trigger {
                             Some(_) => {
                                 if let Some(mut state) = recording_state.take() {
@@ -630,5 +640,48 @@ pub async fn run_daemon() {
 
         // Inner loop exited — wait briefly before reconnecting
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::stream;
+
+    #[tokio::test]
+    async fn test_wait_for_trigger_success_shortcut() {
+        let mut shortcut_stream = stream::iter(vec![()]);
+        let mut trigger_rx = stream::pending::<()>();
+
+        let res = wait_for_trigger(&mut shortcut_stream, &mut trigger_rx).await;
+        assert!(res.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_trigger_success_manual() {
+        let mut shortcut_stream = stream::pending::<()>();
+        let mut trigger_rx = stream::iter(vec![()]);
+
+        let res = wait_for_trigger(&mut shortcut_stream, &mut trigger_rx).await;
+        assert!(res.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_trigger_none_on_shortcut_end() {
+        // Mock a stream that ends immediately
+        let mut shortcut_stream = stream::empty::<()>();
+        let mut trigger_rx = stream::pending::<()>();
+
+        let res = wait_for_trigger(&mut shortcut_stream, &mut trigger_rx).await;
+        assert!(res.is_none(), "Should return None when shortcut stream ends");
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_trigger_none_on_rx_end() {
+        let mut shortcut_stream = stream::pending::<()>();
+        let mut trigger_rx = stream::empty::<()>();
+
+        let res = wait_for_trigger(&mut shortcut_stream, &mut trigger_rx).await;
+        assert!(res.is_none(), "Should return None when trigger receiver ends");
     }
 }
