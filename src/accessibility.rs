@@ -19,6 +19,14 @@ pub struct AccessibilityManager {
     connection: AccessibilityConnection,
     focused: Arc<Mutex<Option<ObjectRefOwned>>>,
     pub focus_receiver: watch::Receiver<()>,
+    _event_task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for AccessibilityManager {
+    fn drop(&mut self) {
+        eprintln!("[AT-SPI] Dropping AccessibilityManager, aborting event task.");
+        self._event_task.abort();
+    }
 }
 
 impl AccessibilityManager {
@@ -33,7 +41,7 @@ impl AccessibilityManager {
         let mut event_stream = connection.event_stream();
         let (focus_tx, focus_receiver) = watch::channel(());
 
-        tokio::spawn(async move {
+        let event_task = tokio::spawn(async move {
             while let Some(result) = event_stream.next().await {
                 match result {
                     Ok(Event::Object(atspi::connection::common::events::ObjectEvents::StateChanged(ev))) => {
@@ -53,7 +61,7 @@ impl AccessibilityManager {
             eprintln!("[AT-SPI] event stream ended");
         });
 
-        Ok(Self { connection, focused, focus_receiver })
+        Ok(Self { connection, focused, focus_receiver, _event_task: event_task })
     }
 
     /// Returns information about the text cursor in the currently focused element.
