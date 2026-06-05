@@ -24,7 +24,6 @@ pub struct AccessibilityManager {
 
 impl Drop for AccessibilityManager {
     fn drop(&mut self) {
-        eprintln!("[AT-SPI] Dropping AccessibilityManager, aborting event task.");
         self._event_task.abort();
     }
 }
@@ -33,8 +32,13 @@ impl AccessibilityManager {
     pub async fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
         let connection = AccessibilityConnection::new().await?;
 
-        connection.register_event::<StateChangedEvent>().await?;
-        connection.register_event::<ActivateEvent>().await?;
+        // TODO: these registrations cause ibus-extension-gtk3 to spin after suspend/wake.
+        // Commented out until we find a fix that doesn't require on-demand tree traversal
+        // (which is prohibitively slow when Firefox is focused — see memory note
+        // atspi-tree-traversal-perf). With these commented out, cursor context is
+        // silently unavailable; the event stream runs but never receives events.
+        // connection.register_event::<StateChangedEvent>().await?;
+        // connection.register_event::<ActivateEvent>().await?;
 
         let focused: Arc<Mutex<Option<ObjectRefOwned>>> = Arc::new(Mutex::new(None));
         let focused_clone = focused.clone();
@@ -66,6 +70,7 @@ impl AccessibilityManager {
 
     /// Returns information about the text cursor in the currently focused element.
     /// Uses the event-cached focused object — no tree traversal needed.
+    /// Returns None when event registration is disabled (see TODO in new()).
     pub async fn get_cursor_info(&self) -> Result<Option<CursorInfo>, Box<dyn Error + Send + Sync>> {
         let focused_ref = match self.focused.lock().ok().and_then(|g| g.clone()) {
             Some(r) => r,

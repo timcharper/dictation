@@ -172,12 +172,10 @@ pub async fn run_daemon() {
             .expect("Failed to export Daemon D-Bus object");
 
         let mpris_client = mpris::MprisClient::new(conn.clone());
-        eprintln!("[AT-SPI] Creating new AccessibilityManager...");
         let accessibility_mgr = tokio::time::timeout(
             Duration::from_secs(2),
             AccessibilityManager::new()
         ).await.ok().and_then(|res| res.ok());
-        eprintln!("[AT-SPI] AccessibilityManager ready: {}", accessibility_mgr.is_some());
 
         // Subscribe to system sleep/wake events once — the D-Bus connection survives sleep
         let login_proxy = Login1ManagerProxy::new(&conn).await;
@@ -503,7 +501,7 @@ pub async fn run_daemon() {
                                                 .map(|re| re.is_match(&current_wm))
                                                 .unwrap_or(false)
                                         });
-                                        
+
                                         if !is_stale && !is_blacklisted {
                                             println!("[DEBUG] Fetching cursor info from AT-SPI...");
                                             match tokio::time::timeout(Duration::from_secs(1), mgr.get_cursor_info()).await {
